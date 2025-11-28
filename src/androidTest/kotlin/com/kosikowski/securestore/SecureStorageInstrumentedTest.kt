@@ -393,6 +393,216 @@ class SecureStorageInstrumentedTest {
             assertArrayEquals(largePayload, secureStorage.readBlob("large_file"))
         }
 
+    // ==================== NEW API TESTS ====================
+
+    @Test
+    fun contains_existingKey_returnsTrue() =
+        runBlocking {
+            secureStorage.putString(STRING_KEY, STRING_VALUE)
+            assertTrue(secureStorage.contains(STRING_KEY))
+        }
+
+    @Test
+    fun contains_nonExistentKey_returnsFalse() =
+        runBlocking {
+            assertFalse(secureStorage.contains("non-existent-key"))
+        }
+
+    @Test
+    fun removeObject_removesStoredObject() =
+        runBlocking {
+            val secret = SerializableSecret(id = 1, token = "token")
+            secureStorage.putObject(OBJECT_KEY, secret, SerializableSecret.serializer())
+            secureStorage.removeObject(OBJECT_KEY)
+            assertNull(secureStorage.getObject(OBJECT_KEY, SerializableSecret.serializer()))
+        }
+
+    @Test
+    fun blobExists_existingBlob_returnsTrue() =
+        runBlocking {
+            secureStorage.saveBlob(BLOB_FILE, BLOB_PAYLOAD)
+            assertTrue(secureStorage.blobExists(BLOB_FILE))
+        }
+
+    @Test
+    fun blobExists_nonExistentBlob_returnsFalse() =
+        runBlocking {
+            assertFalse(secureStorage.blobExists("non-existent-blob"))
+        }
+
+    @Test
+    fun getAllKeys_returnsAllStoredKeys() =
+        runBlocking {
+            secureStorage.putString("key1", "value1")
+            secureStorage.putString("key2", "value2")
+            secureStorage.putString("key3", "value3")
+
+            val keys = secureStorage.getAllKeys()
+
+            assertEquals(3, keys.size)
+            assertTrue(keys.contains("key1"))
+            assertTrue(keys.contains("key2"))
+            assertTrue(keys.contains("key3"))
+        }
+
+    @Test
+    fun getAllKeys_emptyStorage_returnsEmptySet() =
+        runBlocking {
+            val keys = secureStorage.getAllKeys()
+            assertTrue(keys.isEmpty())
+        }
+
+    @Test
+    fun getAllBlobNames_returnsAllStoredBlobNames() =
+        runBlocking {
+            secureStorage.saveBlob("blob1", "data1".toByteArray())
+            secureStorage.saveBlob("blob2", "data2".toByteArray())
+            secureStorage.saveBlob("blob3", "data3".toByteArray())
+
+            val names = secureStorage.getAllBlobNames()
+
+            assertEquals(3, names.size)
+            assertTrue(names.contains("blob1"))
+            assertTrue(names.contains("blob2"))
+            assertTrue(names.contains("blob3"))
+        }
+
+    @Test
+    fun getAllBlobNames_emptyStorage_returnsEmptySet() =
+        runBlocking {
+            val names = secureStorage.getAllBlobNames()
+            assertTrue(names.isEmpty())
+        }
+
+    @Test
+    fun getStoreInfo_returnsCorrectInfo() {
+        val info = secureStorage.getStoreInfo()
+
+        assertEquals("AES_256_GCM", info.encryptionAlgorithm)
+        assertEquals("default", info.namespace)
+        assertFalse(info.keyEncryptionEnabled)
+        assertFalse(info.fileNameEncryptionEnabled)
+    }
+
+    // ==================== CONFIGURATION TESTS ====================
+
+    @Test
+    fun configuredNamespace_isolatesData() =
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+
+            val config1 = SecureStoreConfig.Builder()
+                .namespace("namespace1")
+                .build()
+            val config2 = SecureStoreConfig.Builder()
+                .namespace("namespace2")
+                .build()
+
+            val storage1 = SecureStorageImpl(context, config1)
+            val storage2 = SecureStorageImpl(context, config2)
+
+            try {
+                // Store in namespace1
+                storage1.putString("shared_key", "value_from_ns1")
+
+                // Should not be visible in namespace2
+                assertNull(storage2.getString("shared_key"))
+
+                // Store different value in namespace2
+                storage2.putString("shared_key", "value_from_ns2")
+
+                // Each namespace should have its own value
+                assertEquals("value_from_ns1", storage1.getString("shared_key"))
+                assertEquals("value_from_ns2", storage2.getString("shared_key"))
+            } finally {
+                storage1.clearAll()
+                storage2.clearAll()
+            }
+        }
+
+    @Test
+    fun configuredEncryption_chaCha20Works() =
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+
+            val config = SecureStoreConfig.Builder()
+                .encryption(EncryptionAlgorithm.CHACHA20_POLY1305)
+                .namespace("chacha_test")
+                .build()
+
+            val storage = SecureStorageImpl(context, config)
+
+            try {
+                storage.putString("test_key", "test_value")
+                assertEquals("test_value", storage.getString("test_key"))
+
+                val info = storage.getStoreInfo()
+                assertEquals("CHACHA20_POLY1305", info.encryptionAlgorithm)
+            } finally {
+                storage.clearAll()
+            }
+        }
+
+    @Test
+    fun configuredWithAssociatedData_preventsRelocation() =
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+
+            val config = SecureStoreConfig.Builder()
+                .useAssociatedData(true)
+                .namespace("aad_test")
+                .build()
+
+            val storage = SecureStorageImpl(context, config)
+
+            try {
+                storage.saveBlob("original_name", "secret_data".toByteArray())
+                val data = storage.readBlob("original_name")
+                assertArrayEquals("secret_data".toByteArray(), data)
+            } finally {
+                storage.clearAll()
+            }
+        }
+
+    @Test
+    fun presetConfigurations_work() {
+        // Test that preset configurations can be instantiated
+        val defaultConfig = SecureStoreConfig.DEFAULT
+        assertEquals(EncryptionAlgorithm.AES_256_GCM, defaultConfig.encryption)
+        assertEquals(KeyProtection.SOFTWARE, defaultConfig.keyProtection)
+
+        val performanceConfig = SecureStoreConfig.PERFORMANCE
+        assertEquals(EncryptionAlgorithm.CHACHA20_POLY1305, performanceConfig.encryption)
+        assertFalse(performanceConfig.useAssociatedData)
+
+        val highSecurityConfig = SecureStoreConfig.HIGH_SECURITY
+        assertEquals(KeyProtection.HARDWARE_REQUIRED, highSecurityConfig.keyProtection)
+        assertTrue(highSecurityConfig.encryptKeys)
+        assertTrue(highSecurityConfig.encryptFileNames)
+        assertTrue(highSecurityConfig.secureMemory)
+    }
+
+    @Test
+    fun configBuilder_toBuilder_preservesValues() {
+        val original = SecureStoreConfig.Builder()
+            .encryption(EncryptionAlgorithm.AES_128_GCM)
+            .namespace("test")
+            .encryptKeys(true)
+            .build()
+
+        val copy = original.toBuilder()
+            .encryptFileNames(true)
+            .build()
+
+        // Original values preserved
+        assertEquals(EncryptionAlgorithm.AES_128_GCM, copy.encryption)
+        assertEquals("test", copy.namespace)
+        assertTrue(copy.encryptKeys)
+
+        // New value added
+        assertTrue(copy.encryptFileNames)
+    }
+
     private companion object {
         private const val STRING_KEY = "secure-storage-key"
         private const val STRING_VALUE = "super-secret"
