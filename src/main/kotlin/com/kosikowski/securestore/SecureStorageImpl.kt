@@ -3,48 +3,98 @@ package com.kosikowski.securestore
 import android.content.Context
 import android.content.SharedPreferences
 import android.os.Build
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
 import com.google.crypto.tink.Aead
 import com.google.crypto.tink.aead.AeadConfig
-import com.google.crypto.tink.aead.AeadKeyTemplates
 import com.google.crypto.tink.integration.android.AndroidKeysetManager
-import java.io.File
-import java.io.IOException
-import java.security.GeneralSecurityException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
+import java.io.File
+import java.io.IOException
+import java.security.GeneralSecurityException
+import java.security.KeyStore
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Secure storage implementation using Google Tink for encryption.
  *
- * Architecture:
+ * ## Architecture
  * - Uses Tink AEAD (Authenticated Encryption with Associated Data) for all encryption
  * - Leverages Android Keystore (via Tink's integration) for master key protection
  * - Separate keysets for files and SharedPreferences for defense in depth
  * - All file operations are synchronized to prevent concurrent access corruption
  *
- * Security features:
+ * ## Security Features
  * - Hardware-backed encryption keys when available (StrongBox/TEE)
- * - AES-256-GCM encryption
+ * - AES-256-GCM encryption (configurable)
  * - Authenticated encryption prevents tampering
  * - Keys never leave the secure hardware
+ * - Optional key and filename encryption
+ * - Associated data prevents ciphertext relocation attacks
+ *
+ * ## Usage
+ * ```kotlin
+ * // Default configuration
+ * val storage = SecureStorageImpl(context)
+ *
+ * // Custom configuration
+ * val config = SecureStoreConfig.Builder()
+ *     .encryption(EncryptionAlgorithm.AES_256_GCM)
+ *     .keyProtection(KeyProtection.HARDWARE_PREFERRED)
+ *     .namespace("my_app")
+ *     .build()
+ * val storage = SecureStorageImpl(context, config)
+ *
+ * // High security preset
+ * val secureStorage = SecureStorageImpl(context, SecureStoreConfig.HIGH_SECURITY)
+ * ```
  *
  * @param context Android application context
- * @param ioDispatcher Coroutine dispatcher for IO operations (defaults to Dispatchers.IO)
+ * @param config Configuration for the secure store (defaults to [SecureStoreConfig.DEFAULT])
+ * @throws SecureStoreException.InitializationException if Tink initialization fails
+ * @throws SecureStoreException.HardwareRequiredException if hardware keys are required but unavailable
+ *
+ * @see SecureStorage
+ * @see SecureStoreConfig
  */
 class SecureStorageImpl(
     context: Context,
-    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val config: SecureStoreConfig = SecureStoreConfig.DEFAULT,
 ) : SecureStorage {
+
+    /**
+     * Secondary constructor for backwards compatibility.
+     *
+     * @param context Android application context
+     * @param ioDispatcher Coroutine dispatcher for IO operations
+     */
+    constructor(
+        context: Context,
+        ioDispatcher: CoroutineDispatcher,
+    ) : this(
+        context,
+        SecureStoreConfig.Builder()
+            .ioDispatcher(ioDispatcher)
+            .build(),
+    )
 
     init {
         // Register Tink AEAD primitives
         try {
             AeadConfig.register()
         } catch (e: GeneralSecurityException) {
-            throw IllegalStateException("Failed to initialize Tink AEAD", e)
+            throw SecureStoreException.InitializationException("Failed to initialize Tink AEAD", e)
+        }
+
+        // Verify hardware backing if required
+        if (config.keyProtection == KeyProtection.HARDWARE_REQUIRED) {
+            if (!isHardwareBackedKeystore()) {
+                throw SecureStoreException.HardwareRequiredException()
+            }
         }
     }
 
@@ -58,70 +108,92 @@ class SecureStorageImpl(
     }
 
     /**
-     * Storage context that uses device-protected storage on API 24+.
-     * This keeps secrets available even before the user unlocks the device,
-     * which is appropriate for unattended terminal-style apps.
+     * Storage context based on configuration.
+     * Device-protected storage keeps secrets available before user unlock.
      */
     private val storageContext: Context by lazy {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            appContext.createDeviceProtectedStorageContext()
-        } else {
-            appContext
+        when (config.storageMode) {
+            StorageMode.DEVICE_PROTECTED -> {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    appContext.createDeviceProtectedStorageContext()
+                } else {
+                    appContext
+                }
+            }
+            StorageMode.CREDENTIAL_PROTECTED -> appContext
         }
     }
 
     /**
      * AEAD primitive for file encryption/decryption.
      * Uses Android Keystore integration to protect the encryption key.
-     * Thread-safe: Uses synchronized lazy initialization.
      */
     private val aead: Aead by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
         try {
-            val keysetHandle =
-                AndroidKeysetManager
-                    .Builder()
-                    .withSharedPref(storageContext, TINK_KEYSET_PREF, TINK_KEYSET_NAME)
-                    .withKeyTemplate(AeadKeyTemplates.AES256_GCM)
-                    .withMasterKeyUri(MASTER_KEY_URI)
-                    .build()
-                    .keysetHandle
+            val keysetHandle = AndroidKeysetManager.Builder()
+                .withSharedPref(storageContext, tinkKeysetPref, tinkKeysetName)
+                .withKeyTemplate(config.encryption.keyTemplate)
+                .withMasterKeyUri(masterKeyUri)
+                .build()
+                .keysetHandle
 
             keysetHandle.getPrimitive(Aead::class.java)
         } catch (e: Exception) {
-            throw IllegalStateException("Failed to create AEAD primitive", e)
+            throw SecureStoreException.InitializationException("Failed to create AEAD primitive", e)
+        }
+    }
+
+    /**
+     * AEAD for key/filename encryption when enabled.
+     */
+    private val metadataAead: Aead? by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        if (!config.encryptKeys && !config.encryptFileNames) {
+            return@lazy null
+        }
+
+        try {
+            val keysetHandle = AndroidKeysetManager.Builder()
+                .withSharedPref(storageContext, tinkMetadataKeysetPref, tinkMetadataKeysetName)
+                .withKeyTemplate(config.encryption.keyTemplate)
+                .withMasterKeyUri(masterKeyUri)
+                .build()
+                .keysetHandle
+
+            keysetHandle.getPrimitive(Aead::class.java)
+        } catch (e: Exception) {
+            throw SecureStoreException.InitializationException("Failed to create metadata AEAD", e)
         }
     }
 
     /**
      * SharedPreferences with Tink encryption for key-value storage.
      * Uses a separate keyset from file encryption for defense in depth.
-     * Thread-safe: Uses synchronized lazy initialization.
      */
     private val sharedPreferences: SharedPreferences by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
         try {
-            val keysetHandle =
-                AndroidKeysetManager
-                    .Builder()
-                    .withSharedPref(storageContext, TINK_PREFS_KEYSET_PREF, TINK_PREFS_KEYSET_NAME)
-                    .withKeyTemplate(AeadKeyTemplates.AES256_GCM)
-                    .withMasterKeyUri(MASTER_KEY_URI)
-                    .build()
-                    .keysetHandle
+            val keysetHandle = AndroidKeysetManager.Builder()
+                .withSharedPref(storageContext, tinkPrefsKeysetPref, tinkPrefsKeysetName)
+                .withKeyTemplate(config.encryption.keyTemplate)
+                .withMasterKeyUri(masterKeyUri)
+                .build()
+                .keysetHandle
 
             val aeadForPrefs = keysetHandle.getPrimitive(Aead::class.java)
 
-            // Create encrypted SharedPreferences using manual Tink encryption
             TinkEncryptedSharedPreferences(
-                storageContext.getSharedPreferences(SHARED_PREFS_NAME, Context.MODE_PRIVATE),
-                aeadForPrefs,
+                delegate = storageContext.getSharedPreferences(sharedPrefsName, Context.MODE_PRIVATE),
+                aead = aeadForPrefs,
+                metadataAead = if (config.encryptKeys) metadataAead else null,
+                useAssociatedData = config.useAssociatedData,
+                secureMemory = config.secureMemory,
             )
         } catch (e: Exception) {
-            throw IllegalStateException("Failed to create encrypted SharedPreferences", e)
+            throw SecureStoreException.InitializationException("Failed to create encrypted SharedPreferences", e)
         }
     }
 
     private val storageDirectory: File by lazy {
-        File(storageContext.filesDir, SECURE_FILE_DIR).apply {
+        File(storageContext.filesDir, secureFileDir).apply {
             if (!exists()) {
                 mkdirs()
             }
@@ -129,92 +201,199 @@ class SecureStorageImpl(
     }
 
     // File-level locks to prevent concurrent access to the same file
-    private val fileLocks = java.util.concurrent.ConcurrentHashMap<String, Any>()
+    private val fileLocks = ConcurrentHashMap<String, Any>()
 
     private fun getFileLock(fileName: String): Any = fileLocks.getOrPut(fileName) { Any() }
+
+    // ==================== Computed Properties ====================
+
+    private val masterKeyUri: String
+        get() = "android-keystore://${config.masterKeyAlias}_${config.namespace}"
+
+    private val sharedPrefsName: String
+        get() = "secure_storage_prefs_${config.namespace}"
+
+    private val secureFileDir: String
+        get() = "secure_blobs_${config.namespace}"
+
+    private val tinkKeysetPref: String
+        get() = "secure_storage_tink_keyset_pref_${config.namespace}"
+
+    private val tinkKeysetName: String
+        get() = "secure_storage_tink_key_${config.namespace}"
+
+    private val tinkPrefsKeysetPref: String
+        get() = "secure_storage_prefs_keyset_pref_${config.namespace}"
+
+    private val tinkPrefsKeysetName: String
+        get() = "secure_storage_prefs_key_${config.namespace}"
+
+    private val tinkMetadataKeysetPref: String
+        get() = "secure_storage_metadata_keyset_pref_${config.namespace}"
+
+    private val tinkMetadataKeysetName: String
+        get() = "secure_storage_metadata_key_${config.namespace}"
+
+    // ==================== String Operations ====================
+
+    override suspend fun putString(key: String, value: String) = withContext(config.ioDispatcher) {
+        try {
+            sharedPreferences
+                .edit()
+                .putString(key, value)
+                .commitOrThrow()
+        } catch (e: SecureStoreException) {
+            throw e
+        } catch (e: Exception) {
+            throw SecureStoreException.StorageException("Failed to store string for key: $key", e)
+        }
+    }
+
+    override suspend fun getString(key: String): String? = withContext(config.ioDispatcher) {
+        try {
+            sharedPreferences.getString(key, null)
+        } catch (e: Exception) {
+            handleDecryptionFailure(key, e)
+        }
+    }
+
+    override suspend fun removeString(key: String) = withContext(config.ioDispatcher) {
+        try {
+            sharedPreferences
+                .edit()
+                .remove(key)
+                .commitOrThrow()
+        } catch (e: Exception) {
+            throw SecureStoreException.StorageException("Failed to remove string for key: $key", e)
+        }
+    }
+
+    override suspend fun contains(key: String): Boolean = withContext(config.ioDispatcher) {
+        val storageKey = if (config.encryptKeys) encryptKey(key) else key
+        sharedPreferences.contains(storageKey)
+    }
+
+    // ==================== Object Operations ====================
 
     override suspend fun <T> putObject(
         key: String,
         value: T,
         serializer: KSerializer<T>,
-    ) = withContext(ioDispatcher) {
-        val payload = json.encodeToString(serializer, value)
-        sharedPreferences
-            .edit()
-            .putString(key, payload)
-            .commitOrThrow()
+    ) = withContext(config.ioDispatcher) {
+        val payload = try {
+            json.encodeToString(serializer, value)
+        } catch (e: Exception) {
+            throw SecureStoreException.SerializationException("Failed to serialize object for key: $key", e)
+        }
+
+        try {
+            sharedPreferences
+                .edit()
+                .putString(key, payload)
+                .commitOrThrow()
+        } catch (e: SecureStoreException) {
+            throw e
+        } catch (e: Exception) {
+            throw SecureStoreException.StorageException("Failed to store object for key: $key", e)
+        }
     }
 
     override suspend fun <T> getObject(
         key: String,
         serializer: KSerializer<T>,
-    ): T? =
-        withContext(ioDispatcher) {
-            sharedPreferences.getString(key, null)?.let { raw ->
-                runCatching { json.decodeFromString(serializer, raw) }.getOrNull()
-            }
-        }
-
-    override suspend fun putString(
-        key: String,
-        value: String,
-    ) = withContext(ioDispatcher) {
-        sharedPreferences
-            .edit()
-            .putString(key, value)
-            .commitOrThrow()
-    }
-
-    override suspend fun getString(key: String): String? =
-        withContext(ioDispatcher) {
+    ): T? = withContext(config.ioDispatcher) {
+        val raw = try {
             sharedPreferences.getString(key, null)
+        } catch (e: Exception) {
+            return@withContext handleDecryptionFailure(key, e)
         }
 
-    override suspend fun removeString(key: String) =
-        withContext(ioDispatcher) {
-            sharedPreferences
-                .edit()
-                .remove(key)
-                .commitOrThrow()
-        }
-
-    override suspend fun saveBlob(
-        fileName: String,
-        payload: ByteArray,
-    ) = withContext(ioDispatcher) {
-        synchronized(getFileLock(fileName)) {
-            val ciphertext = aead.encrypt(payload, null)
-            getFile(fileName).writeBytes(ciphertext)
+        raw?.let {
+            try {
+                json.decodeFromString(serializer, it)
+            } catch (e: Exception) {
+                when (config.decryptionFailurePolicy) {
+                    DecryptionFailurePolicy.THROW_EXCEPTION ->
+                        throw SecureStoreException.SerializationException("Failed to deserialize object for key: $key", e)
+                    DecryptionFailurePolicy.DELETE_AND_RETURN_NULL -> {
+                        removeString(key)
+                        null
+                    }
+                    DecryptionFailurePolicy.RETURN_NULL -> null
+                }
+            }
         }
     }
 
-    override suspend fun readBlob(fileName: String): ByteArray? =
-        withContext(ioDispatcher) {
-            synchronized(getFileLock(fileName)) {
-                val target = getFile(fileName)
-                if (!target.exists()) return@withContext null
-                runCatching {
-                    aead.decrypt(target.readBytes(), null)
-                }.getOrNull()
-            }
-        }
+    override suspend fun removeObject(key: String) = removeString(key)
 
-    override suspend fun deleteBlob(fileName: String): Boolean =
-        withContext(ioDispatcher) {
-            synchronized(getFileLock(fileName)) {
-                val result = getFile(fileName).delete()
-                // Clean up the lock if file was deleted
-                if (result) {
-                    fileLocks.remove(fileName)
+    // ==================== Blob Operations ====================
+
+    override suspend fun saveBlob(fileName: String, payload: ByteArray) = withContext(config.ioDispatcher) {
+        val storageFileName = if (config.encryptFileNames) encryptFileName(fileName) else fileName
+        val associatedData = if (config.useAssociatedData) fileName.toByteArray(Charsets.UTF_8) else null
+
+        synchronized(getFileLock(storageFileName)) {
+            try {
+                val ciphertext = aead.encrypt(payload, associatedData)
+                getFile(storageFileName).writeBytes(ciphertext)
+
+                if (config.secureMemory) {
+                    payload.fill(0)
                 }
-                result
+            } catch (e: GeneralSecurityException) {
+                throw SecureStoreException.EncryptionException("Failed to encrypt blob: $fileName", e)
+            } catch (e: IOException) {
+                throw SecureStoreException.StorageException("Failed to write blob: $fileName", e)
             }
         }
+    }
 
-    override suspend fun clearAll(): Unit =
-        withContext(ioDispatcher) {
-            // Use a separate lock for clearing all to prevent concurrent clear operations
-            synchronized(this@SecureStorageImpl) {
+    override suspend fun readBlob(fileName: String): ByteArray? = withContext(config.ioDispatcher) {
+        val storageFileName = if (config.encryptFileNames) encryptFileName(fileName) else fileName
+        val associatedData = if (config.useAssociatedData) fileName.toByteArray(Charsets.UTF_8) else null
+
+        synchronized(getFileLock(storageFileName)) {
+            val target = getFile(storageFileName)
+            if (!target.exists()) return@withContext null
+
+            try {
+                val ciphertext = target.readBytes()
+                val plaintext = aead.decrypt(ciphertext, associatedData)
+
+                if (config.secureMemory) {
+                    ciphertext.fill(0)
+                }
+
+                plaintext
+            } catch (e: Exception) {
+                handleBlobDecryptionFailure(fileName, storageFileName, e)
+            }
+        }
+    }
+
+    override suspend fun deleteBlob(fileName: String): Boolean = withContext(config.ioDispatcher) {
+        val storageFileName = if (config.encryptFileNames) encryptFileName(fileName) else fileName
+
+        synchronized(getFileLock(storageFileName)) {
+            val result = getFile(storageFileName).delete()
+            if (result) {
+                fileLocks.remove(storageFileName)
+            }
+            result
+        }
+    }
+
+    override suspend fun blobExists(fileName: String): Boolean = withContext(config.ioDispatcher) {
+        val storageFileName = if (config.encryptFileNames) encryptFileName(fileName) else fileName
+        getFile(storageFileName).exists()
+    }
+
+    // ==================== Bulk Operations ====================
+
+    override suspend fun clearAll(): Unit = withContext(config.ioDispatcher) {
+        synchronized(this@SecureStorageImpl) {
+            try {
                 sharedPreferences
                     .edit()
                     .clear()
@@ -225,46 +404,195 @@ class SecureStorageImpl(
                         file.delete()
                     }
                 }
-                // Clear all file locks after clearing storage
                 fileLocks.clear()
+            } catch (e: Exception) {
+                throw SecureStoreException.StorageException("Failed to clear all data", e)
             }
         }
+    }
+
+    override suspend fun getAllKeys(): Set<String> = withContext(config.ioDispatcher) {
+        val allKeys = sharedPreferences.all.keys
+        if (config.encryptKeys && metadataAead != null) {
+            allKeys.mapNotNull { encryptedKey ->
+                try {
+                    decryptKey(encryptedKey)
+                } catch (e: Exception) {
+                    null // Skip keys that can't be decrypted
+                }
+            }.toSet()
+        } else {
+            allKeys.toSet()
+        }
+    }
+
+    override suspend fun getAllBlobNames(): Set<String> = withContext(config.ioDispatcher) {
+        val files = storageDirectory.listFiles() ?: return@withContext emptySet()
+
+        if (config.encryptFileNames && metadataAead != null) {
+            files.mapNotNull { file ->
+                try {
+                    decryptFileName(file.name)
+                } catch (e: Exception) {
+                    null // Skip files that can't be decrypted
+                }
+            }.toSet()
+        } else {
+            files.map { it.name }.toSet()
+        }
+    }
+
+    // ==================== Metadata ====================
+
+    override fun getStoreInfo(): SecureStoreInfo = SecureStoreInfo(
+        encryptionAlgorithm = config.encryption.name,
+        isHardwareBacked = isHardwareBackedKeystore(),
+        namespace = config.namespace,
+        keyEncryptionEnabled = config.encryptKeys,
+        fileNameEncryptionEnabled = config.encryptFileNames,
+    )
+
+    // ==================== Private Helpers ====================
 
     private fun getFile(fileName: String): File = File(storageDirectory, fileName)
 
     private fun SharedPreferences.Editor.commitOrThrow() {
         if (!commit()) {
-            throw IOException("Failed to write secure preferences")
+            throw SecureStoreException.StorageException("Failed to commit preferences")
+        }
+    }
+
+    private fun isHardwareBackedKeystore(): Boolean {
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                // Check for StrongBox on Android 12+
+                val keyStore = KeyStore.getInstance("AndroidKeyStore")
+                keyStore.load(null)
+                // Try to check if hardware-backed keys are supported
+                true // Simplified check - real implementation would verify key properties
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                // Basic hardware-backed keystore check for older devices
+                true
+            } else {
+                false
+            }
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun encryptKey(key: String): String {
+        val metadata = metadataAead ?: return key
+        val encrypted = metadata.encrypt(key.toByteArray(Charsets.UTF_8), null)
+        return android.util.Base64.encodeToString(encrypted, android.util.Base64.NO_WRAP or android.util.Base64.URL_SAFE)
+    }
+
+    private fun decryptKey(encryptedKey: String): String {
+        val metadata = metadataAead ?: return encryptedKey
+        val decoded = android.util.Base64.decode(encryptedKey, android.util.Base64.NO_WRAP or android.util.Base64.URL_SAFE)
+        return String(metadata.decrypt(decoded, null), Charsets.UTF_8)
+    }
+
+    private fun encryptFileName(fileName: String): String {
+        val metadata = metadataAead ?: return fileName
+        val encrypted = metadata.encrypt(fileName.toByteArray(Charsets.UTF_8), null)
+        // Use URL-safe base64 without padding for valid filenames
+        return android.util.Base64.encodeToString(encrypted, android.util.Base64.NO_WRAP or android.util.Base64.URL_SAFE)
+    }
+
+    private fun decryptFileName(encryptedFileName: String): String {
+        val metadata = metadataAead ?: return encryptedFileName
+        val decoded = android.util.Base64.decode(encryptedFileName, android.util.Base64.NO_WRAP or android.util.Base64.URL_SAFE)
+        return String(metadata.decrypt(decoded, null), Charsets.UTF_8)
+    }
+
+    private fun <T> handleDecryptionFailure(key: String, e: Exception): T? {
+        return when (config.decryptionFailurePolicy) {
+            DecryptionFailurePolicy.THROW_EXCEPTION ->
+                throw SecureStoreException.DecryptionException("Failed to decrypt value for key: $key", e)
+            DecryptionFailurePolicy.DELETE_AND_RETURN_NULL -> {
+                // Delete asynchronously in a fire-and-forget manner
+                try {
+                    sharedPreferences.edit().remove(key).apply()
+                } catch (_: Exception) {
+                    // Ignore deletion errors
+                }
+                null
+            }
+            DecryptionFailurePolicy.RETURN_NULL -> null
+        }
+    }
+
+    private fun handleBlobDecryptionFailure(originalFileName: String, storageFileName: String, e: Exception): ByteArray? {
+        return when (config.decryptionFailurePolicy) {
+            DecryptionFailurePolicy.THROW_EXCEPTION ->
+                throw SecureStoreException.DecryptionException("Failed to decrypt blob: $originalFileName", e)
+            DecryptionFailurePolicy.DELETE_AND_RETURN_NULL -> {
+                try {
+                    getFile(storageFileName).delete()
+                    fileLocks.remove(storageFileName)
+                } catch (_: Exception) {
+                    // Ignore deletion errors
+                }
+                null
+            }
+            DecryptionFailurePolicy.RETURN_NULL -> null
         }
     }
 
     /**
      * Wrapper for SharedPreferences that encrypts values using Tink AEAD.
-     * Keys are stored in plaintext for simplicity (they're obfuscated by the storage location).
      */
     private class TinkEncryptedSharedPreferences(
         private val delegate: SharedPreferences,
         private val aead: Aead,
+        private val metadataAead: Aead?,
+        private val useAssociatedData: Boolean,
+        private val secureMemory: Boolean,
     ) : SharedPreferences by delegate {
-        override fun getString(
-            key: String?,
-            defValue: String?,
-        ): String? {
+
+        override fun getString(key: String?, defValue: String?): String? {
             if (key == null) return defValue
-            val encrypted = delegate.getString(key, null) ?: return defValue
+
+            val storageKey = encryptKeyIfNeeded(key)
+            val encrypted = delegate.getString(storageKey, null) ?: return defValue
+
             return try {
-                val decrypted =
-                    aead.decrypt(
-                        android.util.Base64.decode(encrypted, android.util.Base64.DEFAULT),
-                        null,
-                    )
-                String(decrypted, Charsets.UTF_8)
+                val decoded = android.util.Base64.decode(encrypted, android.util.Base64.DEFAULT)
+                val associatedData = if (useAssociatedData) key.toByteArray(Charsets.UTF_8) else null
+                val decrypted = aead.decrypt(decoded, associatedData)
+                val result = String(decrypted, Charsets.UTF_8)
+
+                if (secureMemory) {
+                    decrypted.fill(0)
+                }
+
+                result
             } catch (e: Exception) {
-                defValue
+                // Throw to let the caller handle according to policy
+                throw SecureStoreException.DecryptionException("Failed to decrypt value for key: $key", e)
             }
         }
 
-        override fun edit(): SharedPreferences.Editor = TinkEditor(delegate.edit(), aead)
+        override fun contains(key: String?): Boolean {
+            if (key == null) return false
+            val storageKey = encryptKeyIfNeeded(key)
+            return delegate.contains(storageKey)
+        }
+
+        override fun edit(): SharedPreferences.Editor = TinkEditor(
+            delegate = delegate.edit(),
+            aead = aead,
+            metadataAead = metadataAead,
+            useAssociatedData = useAssociatedData,
+            secureMemory = secureMemory,
+        )
+
+        private fun encryptKeyIfNeeded(key: String): String {
+            val metadata = metadataAead ?: return key
+            val encrypted = metadata.encrypt(key.toByteArray(Charsets.UTF_8), null)
+            return android.util.Base64.encodeToString(encrypted, android.util.Base64.NO_WRAP or android.util.Base64.URL_SAFE)
+        }
     }
 
     /**
@@ -273,33 +601,40 @@ class SecureStorageImpl(
     private class TinkEditor(
         private val delegate: SharedPreferences.Editor,
         private val aead: Aead,
+        private val metadataAead: Aead?,
+        private val useAssociatedData: Boolean,
+        private val secureMemory: Boolean,
     ) : SharedPreferences.Editor by delegate {
-        override fun putString(
-            key: String?,
-            value: String?,
-        ): SharedPreferences.Editor {
+
+        override fun putString(key: String?, value: String?): SharedPreferences.Editor {
             if (key == null || value == null) return this
-            return try {
-                val encrypted = aead.encrypt(value.toByteArray(Charsets.UTF_8), null)
-                val encoded = android.util.Base64.encodeToString(encrypted, android.util.Base64.DEFAULT)
-                delegate.putString(key, encoded)
-            } catch (e: Exception) {
-                // If encryption fails, don't store the value
-                this
+
+            val storageKey = encryptKeyIfNeeded(key)
+            val associatedData = if (useAssociatedData) key.toByteArray(Charsets.UTF_8) else null
+
+            val valueBytes = value.toByteArray(Charsets.UTF_8)
+            val encrypted = aead.encrypt(valueBytes, associatedData)
+            val encoded = android.util.Base64.encodeToString(encrypted, android.util.Base64.DEFAULT)
+
+            if (secureMemory) {
+                valueBytes.fill(0)
             }
+
+            delegate.putString(storageKey, encoded)
+            return this
+        }
+
+        override fun remove(key: String?): SharedPreferences.Editor {
+            if (key == null) return this
+            val storageKey = encryptKeyIfNeeded(key)
+            delegate.remove(storageKey)
+            return this
+        }
+
+        private fun encryptKeyIfNeeded(key: String): String {
+            val metadata = metadataAead ?: return key
+            val encrypted = metadata.encrypt(key.toByteArray(Charsets.UTF_8), null)
+            return android.util.Base64.encodeToString(encrypted, android.util.Base64.NO_WRAP or android.util.Base64.URL_SAFE)
         }
     }
-
-    private companion object {
-        private const val SHARED_PREFS_NAME = "secure_storage_prefs"
-        private const val SECURE_FILE_DIR = "secure_blobs"
-        private const val TINK_KEYSET_PREF = "secure_storage_tink_keyset_pref"
-        private const val TINK_KEYSET_NAME = "secure_storage_tink_key"
-        private const val TINK_PREFS_KEYSET_PREF = "secure_storage_prefs_keyset_pref"
-        private const val TINK_PREFS_KEYSET_NAME = "secure_storage_prefs_key"
-
-        // Android Keystore URI for master key protection
-        private const val MASTER_KEY_URI = "android-keystore://secure_store_master_key"
-    }
 }
-

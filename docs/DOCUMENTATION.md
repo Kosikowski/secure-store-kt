@@ -17,11 +17,52 @@ SecureStore/
     ├── SECURITY.md             # Security information
     ├── TESTING.md              # Testing guide
     ├── PUBLISHING.md           # Publishing to Maven Central
-    ├── PROJECT_SUMMARY.md      # Project summary
+    ├── DOCUMENTATION.md        # This file
     └── api/                    # Generated API docs (gitignored)
         ├── html/               # HTML documentation
         └── javadoc/            # Javadoc format
 ```
+
+## Main Classes and Files
+
+### Core API
+
+| File | Description |
+|------|-------------|
+| `SecureStorage.kt` | Main interface defining all storage operations |
+| `SecureStorageImpl.kt` | Full implementation with Tink encryption |
+| `SecureStoreConfig.kt` | Configuration builder and presets |
+| `SecureStoreException.kt` | Custom exception hierarchy |
+
+### Configuration Classes
+
+| Class | Description |
+|-------|-------------|
+| `SecureStoreConfig` | Main configuration class with builder pattern |
+| `SecureStoreConfig.Builder` | Fluent builder for configuration |
+| `EncryptionAlgorithm` | Enum of supported encryption algorithms |
+| `KeyProtection` | Enum of key protection levels |
+| `StorageMode` | Enum of storage modes |
+| `DecryptionFailurePolicy` | Enum of decryption failure behaviors |
+
+### Data Classes
+
+| Class | Description |
+|-------|-------------|
+| `SecureStoreInfo` | Metadata about a SecureStore instance |
+
+### Exceptions
+
+| Exception | Description |
+|-----------|-------------|
+| `SecureStoreException` | Base sealed class for all exceptions |
+| `InitializationException` | Tink or Keystore init failure |
+| `EncryptionException` | Encryption operation failure |
+| `DecryptionException` | Decryption operation failure |
+| `KeystoreException` | Android Keystore failure |
+| `StorageException` | I/O operation failure |
+| `HardwareRequiredException` | Hardware keys unavailable |
+| `SerializationException` | Object serialization failure |
 
 ## Generating API Documentation
 
@@ -65,7 +106,8 @@ All public APIs are documented with KDoc comments:
  *
  * @param key The unique identifier for the value
  * @param value The string to encrypt and store
- * @throws IOException if encryption or storage fails
+ * @throws SecureStoreException.EncryptionException if encryption fails
+ * @throws SecureStoreException.StorageException if storage fails
  */
 suspend fun putString(key: String, value: String)
 ```
@@ -82,37 +124,86 @@ Generated documentation includes links to source code on GitHub.
 
 HTML documentation includes full-text search.
 
-## Documentation Options
+## API Overview
 
-### Alternative Tools
+### SecureStorage Interface
 
-1. **Dokka** (Current) ✅
-   - Official Kotlin documentation tool
-   - Multiple output formats (HTML, Javadoc, Markdown)
-   - GitHub integration
-   - Maven Central compatible
+The main interface providing all storage operations:
 
-2. **Orchid**
-   - Beautiful static site generator
-   - More customizable
-   - Requires more setup
+```kotlin
+interface SecureStorage {
+    // String operations
+    suspend fun putString(key: String, value: String)
+    suspend fun getString(key: String): String?
+    suspend fun removeString(key: String)
+    suspend fun contains(key: String): Boolean
+    
+    // Object operations
+    suspend fun <T> putObject(key: String, value: T, serializer: KSerializer<T>)
+    suspend fun <T> getObject(key: String, serializer: KSerializer<T>): T?
+    suspend fun removeObject(key: String)
+    
+    // Blob operations
+    suspend fun saveBlob(fileName: String, payload: ByteArray)
+    suspend fun readBlob(fileName: String): ByteArray?
+    suspend fun deleteBlob(fileName: String): Boolean
+    suspend fun blobExists(fileName: String): Boolean
+    
+    // Bulk operations
+    suspend fun clearAll()
+    suspend fun getAllKeys(): Set<String>
+    suspend fun getAllBlobNames(): Set<String>
+    
+    // Metadata
+    fun getStoreInfo(): SecureStoreInfo
+}
+```
 
-3. **GitHub Pages**
-   - Host documentation online
-   - Automated deployment via GitHub Actions
+### SecureStoreConfig
 
-4. **Read the Docs**
-   - Professional documentation hosting
-   - Version management
-   - Free for open source
+Configuration with builder pattern:
 
-### Recommended Setup (GitHub Pages)
+```kotlin
+val config = SecureStoreConfig.Builder()
+    .encryption(EncryptionAlgorithm.AES_256_GCM)
+    .keyProtection(KeyProtection.HARDWARE_PREFERRED)
+    .storageMode(StorageMode.DEVICE_PROTECTED)
+    .namespace("my_app")
+    .encryptKeys(true)
+    .encryptFileNames(true)
+    .useAssociatedData(true)
+    .secureMemory(true)
+    .decryptionFailurePolicy(DecryptionFailurePolicy.DELETE_AND_RETURN_NULL)
+    .ioDispatcher(Dispatchers.IO)
+    .build()
+```
 
-1. Generate docs: `./gradlew dokkaHtml`
-2. Copy to `docs/api/html/`
-3. Enable GitHub Pages in repository settings
-4. Set source to `/docs` folder
-5. Access at: `https://kosikowski.github.io/secure-store-kt/`
+### Configuration Presets
+
+```kotlin
+// Standard configuration
+SecureStoreConfig.DEFAULT
+
+// Maximum security
+SecureStoreConfig.HIGH_SECURITY
+
+// Optimized for performance
+SecureStoreConfig.PERFORMANCE
+```
+
+### Exception Handling
+
+```kotlin
+try {
+    storage.putString("key", "value")
+} catch (e: SecureStoreException.EncryptionException) {
+    // Handle encryption failure
+} catch (e: SecureStoreException.StorageException) {
+    // Handle storage failure
+} catch (e: SecureStoreException) {
+    // Handle any SecureStore error
+}
+```
 
 ## Publishing Documentation
 
@@ -125,8 +216,8 @@ Documentation JARs are automatically generated and published:
 ```
 
 This creates:
-- `securestore-1.0.0-javadoc.jar` - Javadoc format
-- `securestore-1.0.0-sources.jar` - Source code
+- `securestore-1.1.0-javadoc.jar` - Javadoc format
+- `securestore-1.1.0-sources.jar` - Source code
 
 ### Standalone Documentation
 
@@ -159,10 +250,20 @@ git push
  * A secure storage implementation using Google Tink encryption.
  *
  * This class provides encrypted storage for strings, objects, and binary data.
- * All data is encrypted using AES-256-GCM with keys protected by Android Keystore.
+ * All data is encrypted using configurable AEAD algorithms with keys protected 
+ * by Android Keystore.
  *
  * ## Thread Safety
  * All operations are thread-safe and can be called from multiple threads.
+ *
+ * ## Configuration
+ * ```kotlin
+ * val config = SecureStoreConfig.Builder()
+ *     .encryption(EncryptionAlgorithm.AES_256_GCM)
+ *     .keyProtection(KeyProtection.HARDWARE_PREFERRED)
+ *     .build()
+ * val storage = SecureStorageImpl(context, config)
+ * ```
  *
  * ## Usage
  * ```kotlin
@@ -172,14 +273,16 @@ git push
  * ```
  *
  * @param context Android application context
- * @param ioDispatcher Coroutine dispatcher for IO operations (defaults to Dispatchers.IO)
- * @throws IllegalStateException if Tink initialization fails
+ * @param config Configuration for the secure store (defaults to [SecureStoreConfig.DEFAULT])
+ * @throws SecureStoreException.InitializationException if Tink initialization fails
+ * @throws SecureStoreException.HardwareRequiredException if hardware keys are required but unavailable
  *
  * @see SecureStorage
+ * @see SecureStoreConfig
  */
 class SecureStorageImpl(
-    private val context: Context,
-    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
+    context: Context,
+    config: SecureStoreConfig = SecureStoreConfig.DEFAULT
 ) : SecureStorage
 ```
 
@@ -198,4 +301,3 @@ When making changes:
 - [Dokka Documentation](https://kotlinlang.org/docs/dokka-introduction.html)
 - [KDoc Syntax](https://kotlinlang.org/docs/kotlin-doc.html)
 - [Markdown Guide](https://www.markdownguide.org/)
-

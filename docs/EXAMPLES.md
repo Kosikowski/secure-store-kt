@@ -18,9 +18,12 @@ class ExampleUsage(context: Context) {
         // Store
         storage.putString("api_key", "sk-1234567890")
         
-        // Retrieve
-        val apiKey = storage.getString("api_key")
-        println("API Key: $apiKey")
+        // Check if exists
+        if (storage.contains("api_key")) {
+            // Retrieve
+            val apiKey = storage.getString("api_key")
+            println("API Key: $apiKey")
+        }
         
         // Remove
         storage.removeString("api_key")
@@ -38,6 +41,9 @@ class ExampleUsage(context: Context) {
         // Retrieve
         val retrieved = storage.getObject("current_user", User.serializer())
         println("User: $retrieved")
+        
+        // Remove
+        storage.removeObject("current_user")
     }
     
     fun blobStorage() = runBlocking {
@@ -45,20 +51,123 @@ class ExampleUsage(context: Context) {
         val data = "Sensitive document content".toByteArray()
         storage.saveBlob("document.enc", data)
         
-        // Retrieve
-        val retrieved = storage.readBlob("document.enc")
-        println("Document size: ${retrieved?.size} bytes")
+        // Check if exists
+        if (storage.blobExists("document.enc")) {
+            // Retrieve
+            val retrieved = storage.readBlob("document.enc")
+            println("Document size: ${retrieved?.size} bytes")
+        }
         
         // Delete
         storage.deleteBlob("document.enc")
     }
+    
+    fun listStoredData() = runBlocking {
+        // List all stored keys
+        val allKeys = storage.getAllKeys()
+        println("Stored keys: $allKeys")
+        
+        // List all blob filenames
+        val allBlobs = storage.getAllBlobNames()
+        println("Stored blobs: $allBlobs")
+    }
+    
+    fun getStoreMetadata() {
+        val info = storage.getStoreInfo()
+        println("Encryption: ${info.encryptionAlgorithm}")
+        println("Hardware-backed: ${info.isHardwareBacked}")
+        println("Namespace: ${info.namespace}")
+    }
 }
+```
+
+## Configuration Examples
+
+### Default Configuration
+
+```kotlin
+import com.kosikowski.securestore.SecureStorageImpl
+
+// Uses SecureStoreConfig.DEFAULT
+val storage = SecureStorageImpl(context)
+```
+
+### Custom Configuration
+
+```kotlin
+import com.kosikowski.securestore.*
+
+val config = SecureStoreConfig.Builder()
+    .encryption(EncryptionAlgorithm.AES_256_GCM)
+    .keyProtection(KeyProtection.HARDWARE_PREFERRED)
+    .storageMode(StorageMode.DEVICE_PROTECTED)
+    .namespace("my_app")
+    .encryptKeys(true)
+    .encryptFileNames(true)
+    .useAssociatedData(true)
+    .secureMemory(true)
+    .decryptionFailurePolicy(DecryptionFailurePolicy.DELETE_AND_RETURN_NULL)
+    .build()
+
+val storage = SecureStorageImpl(context, config)
+```
+
+### Using Presets
+
+```kotlin
+import com.kosikowski.securestore.*
+
+// High security preset - hardware-backed keys, encrypted metadata
+val highSecurityStorage = SecureStorageImpl(context, SecureStoreConfig.HIGH_SECURITY)
+
+// Performance preset - ChaCha20-Poly1305, optimized for speed
+val performanceStorage = SecureStorageImpl(context, SecureStoreConfig.PERFORMANCE)
+
+// Default preset
+val defaultStorage = SecureStorageImpl(context, SecureStoreConfig.DEFAULT)
+```
+
+### Namespace Isolation
+
+```kotlin
+import com.kosikowski.securestore.*
+
+// Create isolated storage instances
+val userDataStorage = SecureStorageImpl(context, SecureStoreConfig.Builder()
+    .namespace("user_data")
+    .build())
+
+val cacheStorage = SecureStorageImpl(context, SecureStoreConfig.Builder()
+    .namespace("cache")
+    .build())
+
+// Data in different namespaces is completely isolated
+runBlocking {
+    userDataStorage.putString("key", "user value")
+    cacheStorage.putString("key", "cache value")
+    
+    println(userDataStorage.getString("key")) // "user value"
+    println(cacheStorage.getString("key"))    // "cache value"
+}
+```
+
+### ChaCha20-Poly1305 for Performance
+
+```kotlin
+import com.kosikowski.securestore.*
+
+// ChaCha20-Poly1305 is faster on devices without AES hardware acceleration
+val config = SecureStoreConfig.Builder()
+    .encryption(EncryptionAlgorithm.CHACHA20_POLY1305)
+    .build()
+
+val storage = SecureStorageImpl(context, config)
 ```
 
 ## Authentication Example
 
 ```kotlin
-import com.kosikowski.securestore.SecureStorage
+import com.kosikowski.securestore.*
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -68,7 +177,15 @@ data class AuthTokens(
     val expiresAt: Long
 )
 
-class AuthManager(private val storage: SecureStorage) {
+class AuthManager(context: Context) {
+    
+    private val storage: SecureStorage = SecureStorageImpl(
+        context,
+        SecureStoreConfig.Builder()
+            .namespace("auth")
+            .keyProtection(KeyProtection.HARDWARE_PREFERRED)
+            .build()
+    )
     
     suspend fun saveTokens(tokens: AuthTokens) {
         storage.putObject("auth_tokens", tokens, AuthTokens.serializer())
@@ -79,12 +196,62 @@ class AuthManager(private val storage: SecureStorage) {
     }
     
     suspend fun clearTokens() {
-        storage.removeString("auth_tokens")
+        storage.removeObject("auth_tokens")
+    }
+    
+    suspend fun hasTokens(): Boolean {
+        return storage.contains("auth_tokens")
     }
     
     suspend fun isAuthenticated(): Boolean {
         val tokens = getTokens() ?: return false
         return System.currentTimeMillis() < tokens.expiresAt
+    }
+}
+```
+
+## Error Handling Example
+
+```kotlin
+import com.kosikowski.securestore.*
+import timber.log.Timber
+
+class SecureDataManager(context: Context) {
+    
+    private val storage: SecureStorage = SecureStorageImpl(
+        context,
+        SecureStoreConfig.Builder()
+            .decryptionFailurePolicy(DecryptionFailurePolicy.THROW_EXCEPTION)
+            .build()
+    )
+    
+    suspend fun saveSecurely(key: String, value: String): Result<Unit> {
+        return try {
+            storage.putString(key, value)
+            Result.success(Unit)
+        } catch (e: SecureStoreException.EncryptionException) {
+            Timber.e(e, "Encryption failed for $key")
+            Result.failure(e)
+        } catch (e: SecureStoreException.StorageException) {
+            Timber.e(e, "Storage failed for $key")
+            Result.failure(e)
+        } catch (e: SecureStoreException) {
+            Timber.e(e, "SecureStore error for $key")
+            Result.failure(e)
+        }
+    }
+    
+    suspend fun getSecurely(key: String): Result<String?> {
+        return try {
+            val value = storage.getString(key)
+            Result.success(value)
+        } catch (e: SecureStoreException.DecryptionException) {
+            Timber.e(e, "Decryption failed for $key")
+            Result.failure(e)
+        } catch (e: SecureStoreException) {
+            Timber.e(e, "SecureStore error for $key")
+            Result.failure(e)
+        }
     }
 }
 ```
@@ -95,23 +262,44 @@ class AuthManager(private val storage: SecureStorage) {
 
 ```kotlin
 import android.content.Context
-import com.kosikowski.securestore.SecureStorage
-import com.kosikowski.securestore.SecureStorageImpl
+import com.kosikowski.securestore.*
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
+import javax.inject.Named
 import javax.inject.Singleton
 
 @Module
 @InstallIn(SingletonComponent::class)
 object StorageModule {
+    
     @Provides
     @Singleton
     fun provideSecureStorage(
         @ApplicationContext context: Context
     ): SecureStorage = SecureStorageImpl(context)
+    
+    @Provides
+    @Singleton
+    @Named("high_security")
+    fun provideHighSecurityStorage(
+        @ApplicationContext context: Context
+    ): SecureStorage = SecureStorageImpl(context, SecureStoreConfig.HIGH_SECURITY)
+    
+    @Provides
+    @Singleton
+    @Named("auth")
+    fun provideAuthStorage(
+        @ApplicationContext context: Context
+    ): SecureStorage = SecureStorageImpl(
+        context,
+        SecureStoreConfig.Builder()
+            .namespace("auth")
+            .keyProtection(KeyProtection.HARDWARE_PREFERRED)
+            .build()
+    )
 }
 
 // Usage in ViewModel
@@ -123,7 +311,8 @@ import javax.inject.Inject
 
 @HiltViewModel
 class UserViewModel @Inject constructor(
-    private val storage: SecureStorage
+    private val storage: SecureStorage,
+    @Named("auth") private val authStorage: SecureStorage
 ) : ViewModel() {
     
     fun saveUserPreferences(prefs: UserPreferences) {
@@ -137,13 +326,27 @@ class UserViewModel @Inject constructor(
 ### Koin
 
 ```kotlin
-import com.kosikowski.securestore.SecureStorage
-import com.kosikowski.securestore.SecureStorageImpl
+import com.kosikowski.securestore.*
 import org.koin.android.ext.koin.androidContext
+import org.koin.core.qualifier.named
 import org.koin.dsl.module
 
 val storageModule = module {
     single<SecureStorage> { SecureStorageImpl(androidContext()) }
+    
+    single<SecureStorage>(named("high_security")) {
+        SecureStorageImpl(androidContext(), SecureStoreConfig.HIGH_SECURITY)
+    }
+    
+    single<SecureStorage>(named("auth")) {
+        SecureStorageImpl(
+            androidContext(),
+            SecureStoreConfig.Builder()
+                .namespace("auth")
+                .keyProtection(KeyProtection.HARDWARE_PREFERRED)
+                .build()
+        )
+    }
 }
 
 class UserRepository(private val storage: SecureStorage) {
@@ -157,48 +360,16 @@ val repositoryModule = module {
 }
 ```
 
-## Error Handling
-
-```kotlin
-import com.kosikowski.securestore.SecureStorage
-import java.io.IOException
-import timber.log.Timber
-
-class SecureDataManager(private val storage: SecureStorage) {
-    
-    suspend fun saveSecurely(key: String, value: String): Result<Unit> {
-        return try {
-            storage.putString(key, value)
-            Result.success(Unit)
-        } catch (e: IOException) {
-            Timber.e(e, "Failed to save $key")
-            Result.failure(e)
-        }
-    }
-    
-    suspend fun getSecurely(key: String): Result<String?> {
-        return try {
-            val value = storage.getString(key)
-            Result.success(value)
-        } catch (e: Exception) {
-            Timber.e(e, "Failed to retrieve $key")
-            Result.failure(e)
-        }
-    }
-}
-```
-
 ## Testing
 
 ```kotlin
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.kosikowski.securestore.SecureStorage
-import com.kosikowski.securestore.SecureStorageImpl
+import com.kosikowski.securestore.*
 import kotlinx.coroutines.runBlocking
 import org.junit.After
-import org.junit.Assert.assertEquals
+import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -211,7 +382,11 @@ class SecureStorageTest {
     @Before
     fun setup() {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        storage = SecureStorageImpl(context)
+        // Use a test-specific namespace to avoid conflicts
+        val config = SecureStoreConfig.Builder()
+            .namespace("test_${System.currentTimeMillis()}")
+            .build()
+        storage = SecureStorageImpl(context, config)
         runBlocking { storage.clearAll() }
     }
     
@@ -224,10 +399,42 @@ class SecureStorageTest {
     fun testBasicStorage() = runBlocking {
         storage.putString("test", "value")
         assertEquals("value", storage.getString("test"))
+        assertTrue(storage.contains("test"))
+    }
+    
+    @Test
+    fun testContains() = runBlocking {
+        assertFalse(storage.contains("nonexistent"))
+        storage.putString("exists", "value")
+        assertTrue(storage.contains("exists"))
+    }
+    
+    @Test
+    fun testBlobExists() = runBlocking {
+        assertFalse(storage.blobExists("nonexistent"))
+        storage.saveBlob("exists", "data".toByteArray())
+        assertTrue(storage.blobExists("exists"))
+    }
+    
+    @Test
+    fun testGetAllKeys() = runBlocking {
+        storage.putString("key1", "value1")
+        storage.putString("key2", "value2")
+        
+        val keys = storage.getAllKeys()
+        assertEquals(2, keys.size)
+        assertTrue(keys.contains("key1"))
+        assertTrue(keys.contains("key2"))
+    }
+    
+    @Test
+    fun testStoreInfo() {
+        val info = storage.getStoreInfo()
+        assertEquals("AES_256_GCM", info.encryptionAlgorithm)
+        assertFalse(info.keyEncryptionEnabled)
     }
 }
 ```
-
 
 ## Full App Example
 
@@ -235,48 +442,70 @@ class SecureStorageTest {
 import android.app.Application
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
-import com.kosikowski.securestore.SecureStorage
-import com.kosikowski.securestore.SecureStorageImpl
+import com.kosikowski.securestore.*
 import kotlinx.coroutines.launch
 
 class MyApplication : Application() {
     lateinit var secureStorage: SecureStorage
         private set
     
+    lateinit var authStorage: SecureStorage
+        private set
+    
     override fun onCreate() {
         super.onCreate()
+        
+        // General purpose storage
         secureStorage = SecureStorageImpl(this)
+        
+        // High-security storage for authentication
+        authStorage = SecureStorageImpl(
+            this,
+            SecureStoreConfig.Builder()
+                .namespace("auth")
+                .keyProtection(KeyProtection.HARDWARE_PREFERRED)
+                .encryptKeys(true)
+                .build()
+        )
     }
 }
 
 class LoginActivity : AppCompatActivity() {
     
-    private val storage by lazy {
-        (application as MyApplication).secureStorage
+    private val authStorage by lazy {
+        (application as MyApplication).authStorage
     }
     
     private fun onLoginSuccess(username: String, token: String) {
         lifecycleScope.launch {
-            storage.putString("username", username)
-            storage.putString("auth_token", token)
-            navigateToHome()
+            try {
+                authStorage.putString("username", username)
+                authStorage.putString("auth_token", token)
+                navigateToHome()
+            } catch (e: SecureStoreException) {
+                showError("Failed to save credentials")
+            }
+        }
+    }
+    
+    private fun checkExistingSession() {
+        lifecycleScope.launch {
+            if (authStorage.contains("auth_token")) {
+                navigateToHome()
+            }
         }
     }
     
     private fun onLogout() {
         lifecycleScope.launch {
-            storage.clearAll()
+            authStorage.clearAll()
             navigateToLogin()
         }
     }
     
-    private fun navigateToHome() {
-        // Navigation logic
-    }
-    
-    private fun navigateToLogin() {
-        // Navigation logic
-    }
+    private fun navigateToHome() { /* Navigation logic */ }
+    private fun navigateToLogin() { /* Navigation logic */ }
+    private fun showError(message: String) { /* Error display logic */ }
 }
 ```
 
@@ -293,122 +522,27 @@ class SecurePreferencesManager(private val storage: SecureStorage) {
     private val _authTokenFlow = MutableStateFlow<String?>(null)
     val authTokenFlow: StateFlow<String?> = _authTokenFlow.asStateFlow()
     
+    private val _isAuthenticatedFlow = MutableStateFlow(false)
+    val isAuthenticatedFlow: StateFlow<Boolean> = _isAuthenticatedFlow.asStateFlow()
+    
     suspend fun init() {
-        _authTokenFlow.value = storage.getString("auth_token")
+        val hasToken = storage.contains("auth_token")
+        _isAuthenticatedFlow.value = hasToken
+        if (hasToken) {
+            _authTokenFlow.value = storage.getString("auth_token")
+        }
     }
     
     suspend fun setAuthToken(token: String) {
         storage.putString("auth_token", token)
         _authTokenFlow.value = token
+        _isAuthenticatedFlow.value = true
     }
     
     suspend fun clearAuthToken() {
         storage.removeString("auth_token")
         _authTokenFlow.value = null
-    }
-}
-```
-
-## Advanced: Custom Coroutine Dispatcher
-
-```kotlin
-import android.content.Context
-import com.kosikowski.securestore.SecureStorage
-import com.kosikowski.securestore.SecureStorageImpl
-import kotlinx.coroutines.Dispatchers
-
-class StorageFactory {
-    companion object {
-        fun createSecureStorage(context: Context): SecureStorage {
-            // Use a custom dispatcher with limited parallelism
-            return SecureStorageImpl(
-                context = context,
-                ioDispatcher = Dispatchers.IO.limitedParallelism(4)
-            )
-        }
-    }
-}
-```
-
-## Reactive Updates with LiveData
-
-```kotlin
-import androidx.lifecycle.LiveData
-import androidx.lifecycle.MutableLiveData
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.viewModelScope
-import com.kosikowski.securestore.SecureStorage
-import kotlinx.coroutines.launch
-
-class SettingsViewModel(
-    private val storage: SecureStorage
-) : ViewModel() {
-    
-    private val _username = MutableLiveData<String?>()
-    val username: LiveData<String?> = _username
-    
-    init {
-        loadUsername()
-    }
-    
-    private fun loadUsername() {
-        viewModelScope.launch {
-            _username.value = storage.getString("username")
-        }
-    }
-    
-    fun saveUsername(name: String) {
-        viewModelScope.launch {
-            storage.putString("username", name)
-            _username.value = name
-        }
-    }
-    
-    fun clearUsername() {
-        viewModelScope.launch {
-            storage.removeString("username")
-            _username.value = null
-        }
-    }
-}
-```
-
-## Storing Complex Objects
-
-```kotlin
-import com.kosikowski.securestore.SecureStorage
-import kotlinx.serialization.Serializable
-
-@Serializable
-data class UserProfile(
-    val id: String,
-    val name: String,
-    val email: String,
-    val preferences: UserPreferences,
-    val createdAt: Long
-)
-
-@Serializable
-data class UserPreferences(
-    val theme: String,
-    val notifications: Boolean,
-    val language: String
-)
-
-class ProfileManager(private val storage: SecureStorage) {
-    
-    suspend fun saveProfile(profile: UserProfile) {
-        storage.putObject("user_profile", profile, UserProfile.serializer())
-    }
-    
-    suspend fun getProfile(): UserProfile? {
-        return storage.getObject("user_profile", UserProfile.serializer())
-    }
-    
-    suspend fun updatePreferences(preferences: UserPreferences) {
-        val currentProfile = getProfile() ?: return
-        val updatedProfile = currentProfile.copy(preferences = preferences)
-        saveProfile(updatedProfile)
+        _isAuthenticatedFlow.value = false
     }
 }
 ```
@@ -419,19 +553,29 @@ class ProfileManager(private val storage: SecureStorage) {
 import android.content.Context
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
-import com.kosikowski.securestore.SecureStorageImpl
+import com.kosikowski.securestore.*
+import kotlinx.serialization.Serializable
 
 class DataSyncWorker(
     context: Context,
     params: WorkerParameters
 ) : CoroutineWorker(context, params) {
     
-    private val storage = SecureStorageImpl(context)
+    private val storage = SecureStorageImpl(
+        context,
+        SecureStoreConfig.Builder()
+            .namespace("sync")
+            .build()
+    )
     
     override suspend fun doWork(): Result {
         return try {
-            // Fetch data from API
-            val token = storage.getString("auth_token") ?: return Result.failure()
+            // Check for auth token
+            if (!storage.contains("auth_token")) {
+                return Result.failure()
+            }
+            
+            val token = storage.getString("auth_token")!!
             
             // Sync data...
             val syncedData = fetchDataFromApi(token)
@@ -440,8 +584,10 @@ class DataSyncWorker(
             storage.putObject("synced_data", syncedData, SyncedData.serializer())
             
             Result.success()
-        } catch (e: Exception) {
+        } catch (e: SecureStoreException) {
             Result.retry()
+        } catch (e: Exception) {
+            Result.failure()
         }
     }
     
@@ -455,22 +601,28 @@ class DataSyncWorker(
 data class SyncedData(val items: List<String>)
 ```
 
-## Encrypted File Management
+## Encrypted File Manager with Listing
 
 ```kotlin
-import com.kosikowski.securestore.SecureStorage
+import com.kosikowski.securestore.*
 import java.io.File
 
-class SecureFileManager(
-    private val storage: SecureStorage
-) {
+class SecureFileManager(context: Context) {
+    
+    private val storage: SecureStorage = SecureStorageImpl(
+        context,
+        SecureStoreConfig.Builder()
+            .namespace("files")
+            .encryptFileNames(true)
+            .build()
+    )
     
     suspend fun saveEncryptedFile(file: File): Boolean {
         return try {
             val bytes = file.readBytes()
             storage.saveBlob(file.name, bytes)
             true
-        } catch (e: Exception) {
+        } catch (e: SecureStoreException) {
             false
         }
     }
@@ -483,18 +635,20 @@ class SecureFileManager(
         return storage.deleteBlob(fileName)
     }
     
-    suspend fun listEncryptedFiles(): List<String> {
-        // This is a simplified example
-        // In practice, you'd need to maintain a separate index
-        return emptyList()
+    suspend fun fileExists(fileName: String): Boolean {
+        return storage.blobExists(fileName)
+    }
+    
+    suspend fun listEncryptedFiles(): Set<String> {
+        return storage.getAllBlobNames()
     }
 }
 ```
 
-## Multi-Account Support
+## Multi-Account Support with Namespaces
 
 ```kotlin
-import com.kosikowski.securestore.SecureStorage
+import com.kosikowski.securestore.*
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -504,41 +658,72 @@ data class Account(
     val token: String
 )
 
-class MultiAccountManager(private val storage: SecureStorage) {
+class MultiAccountManager(private val context: Context) {
     
-    suspend fun addAccount(account: Account) {
-        val accounts = getAccounts().toMutableList()
-        accounts.add(account)
-        storage.putObject("accounts", accounts, AccountList.serializer())
+    private val accountListStorage = SecureStorageImpl(
+        context,
+        SecureStoreConfig.Builder()
+            .namespace("account_list")
+            .build()
+    )
+    
+    private fun getAccountStorage(accountId: String): SecureStorage {
+        return SecureStorageImpl(
+            context,
+            SecureStoreConfig.Builder()
+                .namespace("account_$accountId")
+                .keyProtection(KeyProtection.HARDWARE_PREFERRED)
+                .build()
+        )
     }
     
-    suspend fun getAccounts(): List<Account> {
-        return storage.getObject("accounts", AccountList.serializer())?.accounts ?: emptyList()
+    suspend fun addAccount(account: Account) {
+        // Store account in the account-specific namespace
+        val accountStorage = getAccountStorage(account.id)
+        accountStorage.putObject("account", account, Account.serializer())
+        
+        // Add to account list
+        val accountIds = getAccountIds().toMutableSet()
+        accountIds.add(account.id)
+        accountListStorage.putString("account_ids", accountIds.joinToString(","))
+    }
+    
+    suspend fun getAccountIds(): Set<String> {
+        val ids = accountListStorage.getString("account_ids") ?: return emptySet()
+        return ids.split(",").filter { it.isNotBlank() }.toSet()
+    }
+    
+    suspend fun getAccount(accountId: String): Account? {
+        val accountStorage = getAccountStorage(accountId)
+        return accountStorage.getObject("account", Account.serializer())
     }
     
     suspend fun setActiveAccount(accountId: String) {
-        storage.putString("active_account_id", accountId)
+        accountListStorage.putString("active_account_id", accountId)
     }
     
     suspend fun getActiveAccount(): Account? {
-        val accountId = storage.getString("active_account_id") ?: return null
-        return getAccounts().find { it.id == accountId }
+        val accountId = accountListStorage.getString("active_account_id") ?: return null
+        return getAccount(accountId)
     }
     
     suspend fun removeAccount(accountId: String) {
-        val accounts = getAccounts().filter { it.id != accountId }
-        storage.putObject("accounts", AccountList(accounts), AccountList.serializer())
+        // Clear account-specific storage
+        val accountStorage = getAccountStorage(accountId)
+        accountStorage.clearAll()
+        
+        // Remove from account list
+        val accountIds = getAccountIds().toMutableSet()
+        accountIds.remove(accountId)
+        accountListStorage.putString("account_ids", accountIds.joinToString(","))
     }
 }
-
-@Serializable
-data class AccountList(val accounts: List<Account>)
 ```
 
-## Session Management
+## Session Management with Expiry
 
 ```kotlin
-import com.kosikowski.securestore.SecureStorage
+import com.kosikowski.securestore.*
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -550,7 +735,16 @@ data class Session(
     val deviceId: String
 )
 
-class SessionManager(private val storage: SecureStorage) {
+class SessionManager(context: Context) {
+    
+    private val storage: SecureStorage = SecureStorageImpl(
+        context,
+        SecureStoreConfig.Builder()
+            .namespace("session")
+            .keyProtection(KeyProtection.HARDWARE_PREFERRED)
+            .encryptKeys(true)
+            .build()
+    )
     
     suspend fun createSession(session: Session) {
         storage.putObject("session", session, Session.serializer())
@@ -558,6 +752,10 @@ class SessionManager(private val storage: SecureStorage) {
     
     suspend fun getSession(): Session? {
         return storage.getObject("session", Session.serializer())
+    }
+    
+    suspend fun hasSession(): Boolean {
+        return storage.contains("session")
     }
     
     suspend fun isSessionValid(): Boolean {
@@ -575,8 +773,11 @@ class SessionManager(private val storage: SecureStorage) {
     }
     
     suspend fun clearSession() {
-        storage.removeString("session")
+        storage.removeObject("session")
+    }
+    
+    fun getSessionInfo(): SecureStoreInfo {
+        return storage.getStoreInfo()
     }
 }
 ```
-
