@@ -1,10 +1,9 @@
-import org.jetbrains.kotlin.com.intellij.psi.impl.light.LightJavaModule.moduleName
-
 plugins {
-    id("com.android.library") version "8.2.0"
-    kotlin("android") version "1.9.22"
-    kotlin("plugin.serialization") version "1.9.22"
-    id("org.jetbrains.dokka") version "1.9.10"
+    alias(libs.plugins.android.library)
+    alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.dokka)
+    alias(libs.plugins.ktlint)
     id("maven-publish")
     id("signing")
 }
@@ -14,11 +13,11 @@ version = "1.0.0"
 
 android {
     namespace = "com.kosikowski.securestore"
-    compileSdk = 34
+    compileSdk = libs.versions.compileSdk.get().toInt()
 
     defaultConfig {
-        minSdk = 24
-        targetSdk = 34
+        minSdk = libs.versions.minSdk.get().toInt()
+        targetSdk = libs.versions.targetSdk.get().toInt()
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
@@ -29,7 +28,7 @@ android {
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
+                "proguard-rules.pro",
             )
         }
     }
@@ -53,27 +52,19 @@ android {
 
 dependencies {
     // Kotlin
-    implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.22")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.2")
+    implementation(libs.bundles.kotlin)
 
     // Google Tink for encryption
-    implementation("com.google.crypto.tink:tink-android:1.12.0")
+    implementation(libs.tink.android)
 
     // AndroidX
-    implementation("androidx.core:core-ktx:1.12.0")
+    implementation(libs.androidx.core.ktx)
 
     // Testing
-    testImplementation("junit:junit:4.13.2")
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
+    testImplementation(libs.bundles.test)
 
     // Android Instrumented Tests
-    androidTestImplementation("androidx.test.ext:junit:1.1.5")
-    androidTestImplementation("androidx.test:runner:1.5.2")
-    androidTestImplementation("androidx.test:rules:1.5.0")
-    androidTestImplementation("androidx.test:core:1.5.0")
-    androidTestImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
-    androidTestImplementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.2")
+    androidTestImplementation(libs.bundles.android.test)
 }
 
 // Maven Publishing Configuration
@@ -90,7 +81,9 @@ publishing {
 
             pom {
                 name.set("SecureStore")
-                description.set("A secure storage library for Android using Google Tink encryption with Android Keystore backing")
+                description.set(
+                    "A secure storage library for Android using Google Tink encryption with Android Keystore backing",
+                )
                 url.set("https://github.com/Kosikowski/secure-store-kt")
 
                 licenses {
@@ -134,4 +127,39 @@ publishing {
 
 signing {
     sign(publishing.publications["release"])
+}
+
+// ktlint configuration
+ktlint {
+    version.set(libs.versions.ktlintVersion.get())
+    debug.set(false)
+    verbose.set(true)
+    android.set(true)
+    outputToConsole.set(true)
+    outputColorName.set("RED")
+    ignoreFailures.set(false)
+    enableExperimentalRules.set(true)
+    disabledRules.set(setOf("no-wildcard-imports"))
+    filter {
+        exclude("**/generated/**")
+        exclude("**/build/**")
+        exclude("**/.gradle/**")
+        include("**/kotlin/**")
+    }
+}
+
+// Task to install git hooks
+tasks.register("installGitHooks", Copy::class) {
+    description = "Install git hooks from .githooks directory"
+    group = "setup"
+    from(".githooks") {
+        include("*")
+    }
+    into(".git/hooks")
+    fileMode = 0b111101101 // 755 in octal - executable permissions
+    doLast {
+        logger.lifecycle("✅ Git hooks installed successfully!")
+        logger.lifecycle("Hooks will run automatically on git operations.")
+        logger.lifecycle("To bypass a hook, use: git push --no-verify")
+    }
 }

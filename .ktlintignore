@@ -1,0 +1,14 @@
+# Generated files
+build/
+.gradle/
+.idea/
+
+# Generated source files
+**/generated/
+
+# Dokka output
+build/dokka/
+
+# Test resources
+**/test/resources/
+
