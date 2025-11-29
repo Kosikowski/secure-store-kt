@@ -112,14 +112,12 @@ publishing {
 
     repositories {
         maven {
-            name = "sonatype"
-            val releasesRepoUrl = "https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/"
-            val snapshotsRepoUrl = "https://s01.oss.sonatype.org/content/repositories/snapshots/"
-            url = uri(if (version.toString().endsWith("SNAPSHOT")) snapshotsRepoUrl else releasesRepoUrl)
+            name = "central"
+            url = uri("https://central.sonatype.com/api/v1/publisher/upload?publishingType=AUTOMATIC")
 
             credentials {
-                username = project.findProperty("ossrhUsername")?.toString() ?: System.getenv("OSSRH_USERNAME")
-                password = project.findProperty("ossrhPassword")?.toString() ?: System.getenv("OSSRH_PASSWORD")
+                username = project.findProperty("centralUsername")?.toString() ?: System.getenv("CENTRAL_USERNAME")
+                password = project.findProperty("centralToken")?.toString() ?: System.getenv("CENTRAL_TOKEN")
             }
         }
     }
