@@ -6,7 +6,7 @@ Add the dependency to your app's `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("io.github.kosikowski:securestore:1.1.0")
+    implementation("io.github.kosikowski:securestore:1.0.0")
 }
 ```
 
@@ -96,7 +96,7 @@ repositories {
 }
 
 dependencies {
-    implementation("io.github.kosikowski:securestore:1.1.0")
+    implementation("io.github.kosikowski:securestore:1.0.0")
 }
 ```
 

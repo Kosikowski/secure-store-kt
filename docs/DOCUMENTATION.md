@@ -216,8 +216,8 @@ Documentation JARs are automatically generated and published:
 ```
 
 This creates:
-- `securestore-1.1.0-javadoc.jar` - Javadoc format
-- `securestore-1.1.0-sources.jar` - Source code
+- `securestore-1.0.0-javadoc.jar` - Javadoc format
+- `securestore-1.0.0-sources.jar` - Source code
 
 ### Standalone Documentation
 
