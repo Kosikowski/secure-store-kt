@@ -157,7 +157,7 @@ val storage = SecureStorageImpl(context, SecureStoreConfig.DEFAULT)
 ```kotlin
 dependencies {
     // Always use the latest version
-    implementation("io.github.kosikowski:securestore:1.1.0")
+    implementation("io.github.kosikowski:securestore:1.0.0")
 }
 ```
 

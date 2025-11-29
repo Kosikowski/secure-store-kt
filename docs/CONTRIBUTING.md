@@ -138,7 +138,7 @@ Follow the [Kotlin Coding Conventions](https://kotlinlang.org/docs/coding-conven
  * @param key Description of parameter
  * @return Description of return value
  * @throws IOException Description of when this is thrown
- * @since 1.1.0 (for new APIs)
+ * @since 1.0.0 (for new APIs)
  */
 suspend fun example(key: String): String?
 ```
