@@ -9,7 +9,7 @@ plugins {
 }
 
 group = "io.github.kosikowski"
-version = "1.0.0"
+version = "1.1.0"
 
 android {
     namespace = "com.kosikowski.securestore"
@@ -113,7 +113,9 @@ publishing {
     repositories {
         maven {
             name = "central"
-            url = uri("https://central.sonatype.com/api/v1/publisher/upload?publishingType=AUTOMATIC")
+            // Note: After upload, you must log in to https://central.sonatype.com/
+            // and click "Publish" in the Deployments section
+            setUrl("https://central.sonatype.com/api/v1/publisher/upload")
 
             credentials {
                 username = project.findProperty("centralUsername")?.toString() ?: System.getenv("CENTRAL_USERNAME")

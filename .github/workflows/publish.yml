@@ -38,8 +38,9 @@ jobs:
         SIGNING_KEY_ID: ${{ secrets.SIGNING_KEY_ID }}
         SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
       run: |
-        # Publishes to Maven Central with automatic release
-        # No manual "Publish" button click needed in Portal UI
+        # Uploads to Central Portal
+        # After this completes, log in to https://central.sonatype.com/
+        # and click "Publish" in the Deployments section
         ./gradlew publishReleaseToCentralRepository \
           -Psigning.keyId=$SIGNING_KEY_ID \
           -Psigning.password=$SIGNING_PASSWORD \
