@@ -1,16 +1,25 @@
 # Publishing to Maven Central
 
-This guide explains how to publish **SecureStore** to Maven Central.
+This guide explains how to publish **SecureStore** to Maven Central using the **Central Portal** (OSSRH was retired on June 30, 2025).
 
 ## Prerequisites
 
-### 1. Sonatype OSSRH Account
+### 1. Maven Central Portal Account
 
-1. Create an account at <https://s01.oss.sonatype.org/>.
-2. Request access to the `io.github.kosikowski` group ID according to the
-   [Sonatype OSSRH guide](https://central.sonatype.org/publish/publish-guide/).
+1. Create an account at <https://central.sonatype.com/>.
+2. Verify the `io.github.kosikowski` namespace appears in your account.
+   - If you had an old OSSRH account, log in with the same credentials.
+   - If the namespace is missing, contact [Central Support](https://central.sonatype.org/support/).
 
-### 2. GPG Key
+### 2. Generate Portal User Token
+
+1. Log in to <https://central.sonatype.com/>.
+2. Click your username in the top right → **View Account**.
+3. Click **Generate User Token**.
+4. Save the generated **username** and **password** securely.
+   - Note: This generates a new username/password pair (not your account password)
+
+### 3. GPG Key
 
 You need a GPG key to sign artifacts.
 
@@ -25,20 +34,20 @@ gpg --list-keys
 gpg --keyserver keys.openpgp.org --send-keys YOUR_KEY_ID
 ```
 
-### 3. Gradle Properties
+### 4. Gradle Properties
 
-Configure signing and Sonatype credentials in `~/.gradle/gradle.properties`:
+Configure signing and Central Portal credentials in `~/.gradle/gradle.properties`:
 
 ```properties
 signing.keyId=YOUR_KEY_ID
 signing.password=YOUR_GPG_PASSWORD
 signing.secretKeyRingFile=/Users/YOUR_USERNAME/.gnupg/secring.gpg
 
-ossrhUsername=YOUR_SONATYPE_USERNAME
-ossrhPassword=YOUR_SONATYPE_PASSWORD
+centralUsername=YOUR_PORTAL_USERNAME
+centralToken=YOUR_PORTAL_TOKEN
 ```
 
-> Note: The `signing.secretKeyRingFile` path must point to your local GPG keyring.
+> **Note:** The "Generate User Token" feature creates a **username/password pair** specifically for publishing. Use these credentials (not your account login). The property is named `centralToken` but it's actually the password from the token pair.
 
 ---
 
@@ -62,23 +71,17 @@ Run a clean build and all tests:
 
 All tasks should succeed before publishing.
 
-### 3. Publish to Sonatype Staging
+### 3. Publish to Central Portal
 
 ```bash
-./gradlew publishReleasePublicationToSonatypeRepository
+./gradlew publishReleaseToCentralRepository
 ```
 
-This uploads the artifacts to Sonatype's **staging** repository on `s01.oss.sonatype.org`.
+This uploads and **automatically publishes** the artifacts to Maven Central.
 
-### 4. Close and Release Staging Repository
+### 4. Verify Publication
 
-1. Go to <https://s01.oss.sonatype.org/> and log in.
-2. In the left menu, select **Staging Repositories**.
-3. Find the repository starting with `io.github.kosikowski-...`.
-4. Click **Close** and wait for validation to finish.
-5. If validation passes, click **Release**.
-
-After release, Maven Central will sync the artifacts (usually within 30–120 minutes).
+After the publish task completes successfully, the artifacts will be automatically validated and published to Maven Central (usually within 15–30 minutes).
 
 ### 5. Tag the Release in Git
 
@@ -97,43 +100,6 @@ git push origin v1.0.0
 
 ---
 
-## Snapshot Releases
-
-For development versions you can publish **snapshots**.
-
-### 1. Set a Snapshot Version
-
-```kotlin
-version = "1.1.0-SNAPSHOT"
-```
-
-### 2. Publish Snapshot
-
-```bash
-./gradlew publishReleasePublicationToSonatypeRepository
-```
-
-Snapshots are published to the Sonatype snapshots repository:
-
-- <https://s01.oss.sonatype.org/content/repositories/snapshots/>
-
-### 3. Consuming Snapshots
-
-In a client project:
-
-```kotlin
-repositories {
-    maven {
-        url = uri("https://s01.oss.sonatype.org/content/repositories/snapshots/")
-    }
-}
-
-dependencies {
-    implementation("io.github.kosikowski:securestore:1.1.0-SNAPSHOT")
-}
-```
-
----
 
 ## Verification
 
@@ -159,8 +125,9 @@ After a release, verify that the artifact is available:
 
 ### "401 Unauthorized"
 
-- Check `ossrhUsername` / `ossrhPassword` in `~/.gradle/gradle.properties`.
-- Ensure your Sonatype account has permissions for `io.github.kosikowski`.
+- Check `centralUsername` / `centralToken` in `~/.gradle/gradle.properties`.
+- Ensure you generated a Portal user token (username/password pair from Portal, not your account credentials).
+- Verify your account has permissions for `io.github.kosikowski` namespace.
 
 ### "No valid signing key"
 
@@ -170,7 +137,7 @@ After a release, verify that the artifact is available:
 ### "Could not find artifact" on Maven Central
 
 - Maven Central sync can take up to 2 hours.
-- Ensure the staging repository was **Released**, not only **Closed**.
+- Ensure the deployment was **Published** in the Central Portal.
 
 ### "POM validation failed"
 
@@ -187,6 +154,7 @@ Ensure the `pom` block in `build.gradle.kts` contains at least:
 
 ## Useful Links
 
-- [Maven Central](https://search.maven.org/)
-- [Sonatype OSSRH Guide](https://central.sonatype.org/publish/publish-guide/)
+- [Maven Central Portal](https://central.sonatype.com/)
+- [Central Portal Guide](https://central.sonatype.org/publish/publish-portal-guide/)
+- [Maven Central Search](https://search.maven.org/)
 - [GPG Quick Start](https://central.sonatype.org/publish/requirements/gpg/)

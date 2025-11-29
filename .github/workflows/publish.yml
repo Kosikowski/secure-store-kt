@@ -33,12 +33,14 @@ jobs:
 
     - name: Publish to Maven Central
       env:
-        OSSRH_USERNAME: ${{ secrets.OSSRH_USERNAME }}
-        OSSRH_PASSWORD: ${{ secrets.OSSRH_PASSWORD }}
+        CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
+        CENTRAL_TOKEN: ${{ secrets.CENTRAL_TOKEN }}
         SIGNING_KEY_ID: ${{ secrets.SIGNING_KEY_ID }}
         SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
       run: |
-        ./gradlew publishReleasePublicationToSonatypeRepository \
+        # Publishes to Maven Central with automatic release
+        # No manual "Publish" button click needed in Portal UI
+        ./gradlew publishReleaseToCentralRepository \
           -Psigning.keyId=$SIGNING_KEY_ID \
           -Psigning.password=$SIGNING_PASSWORD \
           -Psigning.secretKeyRingFile=secring.gpg
