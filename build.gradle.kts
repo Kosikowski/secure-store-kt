@@ -1,11 +1,13 @@
+import com.vanniktech.maven.publish.AndroidSingleVariantLibrary
+import com.vanniktech.maven.publish.SonatypeHost
+
 plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.dokka)
     alias(libs.plugins.ktlint)
-    id("maven-publish")
-    id("signing")
+    alias(libs.plugins.mavenPublish)
 }
 
 group = "io.github.kosikowski"
@@ -41,13 +43,6 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
-
-    publishing {
-        singleVariant("release") {
-            withSourcesJar()
-            withJavadocJar()
-        }
-    }
 }
 
 dependencies {
@@ -67,66 +62,64 @@ dependencies {
     androidTestImplementation(libs.bundles.android.test)
 }
 
-// Maven Publishing Configuration
-publishing {
-    publications {
-        register<MavenPublication>("release") {
-            groupId = project.group.toString()
-            artifactId = "securestore"
-            version = project.version.toString()
+// Maven Publishing Configuration using Vanniktech plugin
+mavenPublishing {
+    configure(
+        AndroidSingleVariantLibrary(
+            variant = "release",
+            sourcesJar = true,
+            publishJavadocJar = true,
+        ),
+    )
 
-            afterEvaluate {
-                from(components["release"])
-            }
+    publishToMavenCentral(SonatypeHost.CENTRAL_PORTAL, automaticRelease = true)
 
-            pom {
-                name.set("SecureStore")
-                description.set(
-                    "A secure storage library for Android using Google Tink encryption with Android Keystore backing",
-                )
-                url.set("https://github.com/Kosikowski/secure-store-kt")
-
-                licenses {
-                    license {
-                        name.set("The Apache License, Version 2.0")
-                        url.set("http://www.apache.org/licenses/LICENSE-2.0.txt")
-                    }
-                }
-
-                developers {
-                    developer {
-                        id.set("Kosikowski")
-                        name.set("Mateusz Kosikowski")
-                        email.set("mateusz.kosikowski@gmail.com")
-                    }
-                }
-
-                scm {
-                    connection.set("scm:git:git://github.com/Kosikowski/secure-store-kt.git")
-                    developerConnection.set("scm:git:ssh://github.com:Kosikowski/secure-store-kt.git")
-                    url.set("https://github.com/Kosikowski/secure-store-kt")
-                }
-            }
-        }
+    // Only sign if signing credentials are available
+    // CI sets these via environment variables, locally they can be in ~/.gradle/gradle.properties
+    val signingKey =
+        providers.gradleProperty("signingInMemoryKey").orNull
+            ?: System.getenv("ORG_GRADLE_PROJECT_signingInMemoryKey")
+    if (signingKey != null) {
+        signAllPublications()
     }
 
-    repositories {
-        maven {
-            name = "central"
-            // Note: After upload, you must log in to https://central.sonatype.com/
-            // and click "Publish" in the Deployments section
-            setUrl("https://central.sonatype.com/api/v1/publisher/upload")
+    coordinates(
+        groupId = "io.github.kosikowski",
+        artifactId = "securestore",
+        version = project.version.toString(),
+    )
 
-            credentials {
-                username = project.findProperty("centralUsername")?.toString() ?: System.getenv("CENTRAL_USERNAME")
-                password = project.findProperty("centralToken")?.toString() ?: System.getenv("CENTRAL_TOKEN")
+    pom {
+        name.set("SecureStore")
+        description.set(
+            "A secure storage library for Android using Google Tink encryption with Android Keystore backing",
+        )
+        url.set("https://github.com/Kosikowski/secure-store-kt")
+        inceptionYear.set("2024")
+
+        licenses {
+            license {
+                name.set("The Apache License, Version 2.0")
+                url.set("https://www.apache.org/licenses/LICENSE-2.0.txt")
+                distribution.set("repo")
             }
         }
-    }
-}
 
-signing {
-    sign(publishing.publications["release"])
+        developers {
+            developer {
+                id.set("Kosikowski")
+                name.set("Mateusz Kosikowski")
+                email.set("mateusz.kosikowski@gmail.com")
+                url.set("https://github.com/Kosikowski")
+            }
+        }
+
+        scm {
+            url.set("https://github.com/Kosikowski/secure-store-kt")
+            connection.set("scm:git:git://github.com/Kosikowski/secure-store-kt.git")
+            developerConnection.set("scm:git:ssh://git@github.com/Kosikowski/secure-store-kt.git")
+        }
+    }
 }
 
 // ktlint configuration

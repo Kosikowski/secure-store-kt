@@ -27,7 +27,7 @@ androidx-test-core = "1.5.0"
 dokka = "1.9.10"
 ktlint = "11.6.1"
 ktlintVersion = "1.0.1"
-nexus-publish = "2.0.0"
+mavenPublish = "0.29.0"
 
 [libraries]
 # Kotlin
@@ -55,7 +55,7 @@ kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 dokka = { id = "org.jetbrains.dokka", version.ref = "dokka" }
 ktlint = { id = "org.jlleitschuh.gradle.ktlint", version.ref = "ktlint" }
-nexus-publish = { id = "io.github.gradle-nexus.publish-plugin", version.ref = "nexus-publish" }
+mavenPublish = { id = "com.vanniktech.maven.publish", version.ref = "mavenPublish" }
 
 [bundles]
 kotlin = [

@@ -22,31 +22,28 @@ jobs:
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
 
-    - name: Decode signing key
-      env:
-        SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
-      run: |
-        echo $SIGNING_KEY | base64 -d > secring.gpg
+    - name: Validate Gradle wrapper
+      uses: gradle/actions/wrapper-validation@v3
 
     - name: Build library
       run: ./gradlew build
 
     - name: Publish to Maven Central
       env:
-        CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
-        CENTRAL_TOKEN: ${{ secrets.CENTRAL_TOKEN }}
-        SIGNING_KEY_ID: ${{ secrets.SIGNING_KEY_ID }}
-        SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+        ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.CENTRAL_USERNAME }}
+        ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.CENTRAL_TOKEN }}
+        ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
+        ORG_GRADLE_PROJECT_signingInMemoryKeyId: ${{ secrets.SIGNING_KEY_ID }}
+        ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_PASSWORD }}
       run: |
-        # Uploads to Central Portal
-        # After this completes, log in to https://central.sonatype.com/
-        # and click "Publish" in the Deployments section
-        ./gradlew publishReleaseToCentralRepository \
-          -Psigning.keyId=$SIGNING_KEY_ID \
-          -Psigning.password=$SIGNING_PASSWORD \
-          -Psigning.secretKeyRingFile=secring.gpg
+        ./gradlew publishAndReleaseToMavenCentral --no-configuration-cache
 
-    - name: Clean up
-      if: always()
-      run: rm -f secring.gpg
-
+    - name: Verify publication initiated
+      run: |
+        echo "✅ Publication to Maven Central initiated!"
+        echo "The library will be available at:"
+        echo "  https://central.sonatype.com/artifact/io.github.kosikowski/securestore"
+        echo ""
+        echo "Maven Central sync typically takes 15-30 minutes."
+        echo "After sync, the library will be available at:"
+        echo "  https://repo1.maven.org/maven2/io/github/kosikowski/securestore/"
