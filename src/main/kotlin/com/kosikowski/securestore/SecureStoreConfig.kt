@@ -1,6 +1,6 @@
 package com.kosikowski.securestore
 
-import com.google.crypto.tink.KeyTemplate
+import com.google.crypto.tink.proto.KeyTemplate
 import com.google.crypto.tink.aead.AeadKeyTemplates
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
