@@ -210,6 +210,7 @@ Standard configuration for most use cases:
 
 ### `SecureStoreConfig.HIGH_SECURITY`
 Maximum security for sensitive applications:
+- Its own namespace, `high_security`
 - AES-256-GCM encryption
 - Hardware-required key protection
 - Encrypted keys and filenames
@@ -221,6 +222,14 @@ Optimized for performance:
 - ChaCha20-Poly1305 (faster on devices without AES-NI)
 - Software key protection
 - No metadata encryption
+- No associated data
+
+`PERFORMANCE` uses the `default` namespace, like `DEFAULT`, and stores values without associated data,
+so neither can read what the other wrote. To use both, give one its own namespace:
+
+```kotlin
+val cache = SecureStorageImpl(context, SecureStoreConfig.PERFORMANCE.toBuilder().namespace("cache").build())
+```
 
 ## Error Handling
 
@@ -272,6 +281,11 @@ val cacheStorage = SecureStorageImpl(context, SecureStoreConfig.Builder()
 userStorage.putString("key", "value1")
 cacheStorage.getString("key") // Returns null
 ```
+
+Stores that share a namespace and storage mode share their data and keysets, so they must use the same
+`masterKeyAlias`; creating one with a different alias throws `IllegalArgumentException`. Settings that
+change how data is stored (`encryptKeys`, `encryptFileNames`, `useAssociatedData`) should also match,
+or each store only reads what it wrote itself.
 
 ### Dependency Injection
 

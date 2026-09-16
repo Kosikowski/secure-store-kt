@@ -66,6 +66,8 @@ import kotlin.concurrent.write
  * @param config Configuration for the secure store (defaults to [SecureStoreConfig.DEFAULT])
  * @throws SecureStoreException.InitializationException if Tink initialization fails
  * @throws SecureStoreException.HardwareRequiredException if hardware keys are required but unavailable
+ * @throws IllegalArgumentException if another store in this process uses the same storage mode and namespace
+ *   with a different master key alias
  *
  * @see SecureStorage
  * @see SecureStoreConfig
@@ -149,7 +151,9 @@ class SecureStorageImpl(
      * use the same files. A reset deletes those files, so the generation tells each instance to drop
      * what it opened, and the lock keeps operations from running with keysets a reset is deleting.
      */
-    private class SharedState {
+    private class SharedState(
+        val masterKeyAlias: String,
+    ) {
         val lock = ReentrantReadWriteLock()
 
         @Volatile
@@ -165,7 +169,14 @@ class SecureStorageImpl(
         val preferences: SharedPreferences,
     )
 
-    private val shared: SharedState = sharedStates.getOrPut("${config.storageMode}/${config.namespace}") { SharedState() }
+    private val shared: SharedState =
+        sharedStates.getOrPut("${config.storageMode}/${config.namespace}") { SharedState(masterKeyAlias) }.also {
+            require(it.masterKeyAlias == masterKeyAlias) {
+                "Namespace '${config.namespace}' is already used in this process with master key alias '${it.masterKeyAlias}'. " +
+                    "Stores that share a namespace must use the same master key alias: with different ones, each would " +
+                    "treat the other's keysets as lost and delete them."
+            }
+        }
 
     @Volatile
     private var openKeysets: Keysets? = null

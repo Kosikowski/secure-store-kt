@@ -13,6 +13,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -105,6 +106,33 @@ class StoreInstancesInstrumentedTest {
             keys.forEach { assertNotNull(it, fresh.getString(it)) }
             blobs.forEach { assertNotNull(it, fresh.readBlob(it)) }
             assertTrue(resets.isEmpty())
+        }
+
+    @Test
+    fun sameNamespaceWithAnotherMasterKeyAlias_isRejected() {
+        SecureStorageImpl(context, config())
+
+        assertThrows(IllegalArgumentException::class.java) {
+            SecureStorageImpl(context, config().toBuilder().masterKeyAlias("another_master_key").build())
+        }
+    }
+
+    @Test
+    fun defaultAndHighSecurityPresets_keepTheirDataApart() =
+        runBlocking {
+            val default = SecureStorageImpl(context, SecureStoreConfig.DEFAULT)
+            val highSecurity = SecureStorageImpl(context, SecureStoreConfig.HIGH_SECURITY)
+            try {
+                default.putString(KEY, VALUE)
+                highSecurity.putString(KEY, OTHER_VALUE)
+
+                assertEquals(VALUE, default.getString(KEY))
+                assertEquals(OTHER_VALUE, highSecurity.getString(KEY))
+                assertEquals(setOf(KEY), highSecurity.getAllKeys())
+            } finally {
+                default.removeString(KEY)
+                highSecurity.reset()
+            }
         }
 
     /** SharedPreferences are cached per process; moving the file away and back makes the next open read it from disk. */

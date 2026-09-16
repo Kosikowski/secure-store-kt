@@ -335,6 +335,7 @@ class SecureStoreConfig private constructor(
 
         /**
          * High-security configuration with hardware-backed keys and encrypted metadata.
+         * - Namespace "high_security", so it does not share data with [DEFAULT]
          * - AES-256-GCM encryption
          * - Hardware-required key protection
          * - Encrypted keys and file names
@@ -342,6 +343,7 @@ class SecureStoreConfig private constructor(
          * - Corrupted entries are deleted
          */
         val HIGH_SECURITY: SecureStoreConfig = Builder()
+            .namespace("high_security")
             .encryption(EncryptionAlgorithm.AES_256_GCM)
             .keyProtection(KeyProtection.HARDWARE_REQUIRED)
             .encryptKeys(true)
@@ -353,6 +355,8 @@ class SecureStoreConfig private constructor(
 
         /**
          * Performance-optimized configuration.
+         * - Namespace "default", like [DEFAULT]. The two store values differently (see
+         *   [useAssociatedData]), so to use both, give one of them its own namespace with [toBuilder]
          * - ChaCha20-Poly1305 (faster on devices without AES-NI)
          * - Software key protection
          * - No metadata encryption

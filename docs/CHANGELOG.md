@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `SecureStoreConfig.HIGH_SECURITY` uses its own namespace, `high_security`, instead of sharing `default` with `DEFAULT` and `PERFORMANCE`. Nothing it stored in 1.0.0 could be read (see the name encryption fix below)
+- Creating a store whose storage mode and namespace are already used in the process with a different `masterKeyAlias` throws `IllegalArgumentException`. With `KeysetLossPolicy.RESET` each store would treat the other's keysets as lost and delete its data
 - Entries and blobs stored under names encrypted by 1.0.0 are deleted on the first open. They could never be read, and removing them never worked, so recovering them could bring back values the app had removed
 - `DEVICE_PROTECTED` stores keep their keysets in device-protected storage. Keysets written by 1.0.0 are copied on the first open after the user has unlocked, leaving the originals for a `CREDENTIAL_PROTECTED` store with the same namespace; until then a store that already holds data throws `InitializationException`
 - Every operation except `getStoreInfo` throws `InitializationException` or `KeysetLostException` when the store cannot be opened. Reads no longer apply `decryptionFailurePolicy` to it (which returned null by default), `removeString` and `clearAll` no longer wrap it in `StorageException`, and `blobExists`, `deleteBlob` and `getAllBlobNames` now open the store as well

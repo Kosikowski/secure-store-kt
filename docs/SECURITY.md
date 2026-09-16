@@ -84,6 +84,7 @@ Standard security for most applications:
 ### SecureStoreConfig.HIGH_SECURITY
 Maximum security for sensitive applications:
 ```kotlin
+- Namespace "high_security"
 - AES-256-GCM encryption
 - Hardware-required key protection
 - Device-protected storage
