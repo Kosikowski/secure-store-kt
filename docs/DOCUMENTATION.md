@@ -44,6 +44,7 @@ SecureStore/
 | `KeyProtection` | Enum of key protection levels |
 | `StorageMode` | Enum of storage modes |
 | `DecryptionFailurePolicy` | Enum of decryption failure behaviors |
+| `KeysetLossPolicy` | Enum of behaviors when the keysets can no longer be opened |
 
 ### Data Classes
 
@@ -57,6 +58,7 @@ SecureStore/
 |-----------|-------------|
 | `SecureStoreException` | Base sealed class for all exceptions |
 | `InitializationException` | Tink or Keystore init failure |
+| `KeysetLostException` | Keysets can no longer be opened (`KeysetLossPolicy.THROW`) |
 | `EncryptionException` | Encryption operation failure |
 | `DecryptionException` | Decryption operation failure |
 | `KeystoreException` | Android Keystore failure |
@@ -151,6 +153,7 @@ interface SecureStorage {
     
     // Bulk operations
     suspend fun clearAll()
+    suspend fun reset()
     suspend fun getAllKeys(): Set<String>
     suspend fun getAllBlobNames(): Set<String>
     
@@ -174,6 +177,8 @@ val config = SecureStoreConfig.Builder()
     .useAssociatedData(true)
     .secureMemory(true)
     .decryptionFailurePolicy(DecryptionFailurePolicy.DELETE_AND_RETURN_NULL)
+    .keysetLossPolicy(KeysetLossPolicy.RESET)
+    .onKeysetReset { cause -> crashReporter.recordNonFatal(cause) }
     .ioDispatcher(Dispatchers.IO)
     .build()
 ```

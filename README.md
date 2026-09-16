@@ -101,6 +101,8 @@ val performanceStorage = SecureStorageImpl(context, SecureStoreConfig.PERFORMANC
 | `decryptionFailurePolicy` | What to do on decryption failure | RETURN_NULL |
 | `namespace` | Isolate multiple storage instances | "default" |
 | `secureMemory` | Wipe sensitive data from memory after use | false |
+| `keysetLossPolicy` | What to do when the keysets can no longer be opened (RESET, THROW) | RESET |
+| `onKeysetReset` | Called after RESET discarded the stored data | no-op |
 
 ### Storing Objects
 
@@ -168,6 +170,35 @@ println("Filenames encrypted: ${info.fileNameEncryptionEnabled}")
 secureStorage.clearAll()
 ```
 
+### Lost Keys
+
+Android deletes an app's Keystore keys when its data is cleared, and, for apps that share an
+`android:sharedUserId`, when the data of **any** of those apps is cleared. A keyset can also be
+corrupted. Either way the stored data can never be decrypted again.
+
+By default (`KeysetLossPolicy.RESET`) the store deletes the unreadable keysets and data, creates new
+keysets and carries on empty. `onKeysetReset` tells you it happened, so you can report it and restore
+what the app needs:
+
+```kotlin
+val config = SecureStoreConfig.Builder()
+    .onKeysetReset { cause ->
+        crashReporter.recordNonFatal(cause)
+        sessionManager.requireSignIn()
+    }
+    .build()
+```
+
+With `KeysetLossPolicy.THROW` every operation throws `KeysetLostException` until you call `reset()`:
+
+```kotlin
+try {
+    secureStorage.getString("token")
+} catch (e: SecureStoreException.KeysetLostException) {
+    secureStorage.reset()
+}
+```
+
 ## Configuration Presets
 
 ### `SecureStoreConfig.DEFAULT`
@@ -214,6 +245,7 @@ try {
 | Exception | Description |
 |-----------|-------------|
 | `InitializationException` | Tink or Keystore initialization failed |
+| `KeysetLostException` | The keysets can no longer be opened (only with `KeysetLossPolicy.THROW`) |
 | `EncryptionException` | Encryption operation failed |
 | `DecryptionException` | Decryption operation failed |
 | `KeystoreException` | Android Keystore operation failed |
@@ -305,6 +337,7 @@ val secureStorage = SecureStorageImpl(context, config)
 4. **Storage**:
    - Key-Value pairs → Encrypted SharedPreferences
    - Blobs → Encrypted files in app's private directory
+   - Keysets → SharedPreferences next to the data, so `DEVICE_PROTECTED` keeps them in device-protected storage
 
 ### Security Model
 
@@ -368,6 +401,7 @@ interface SecureStorage {
     
     // Bulk operations
     suspend fun clearAll()
+    suspend fun reset()
     suspend fun getAllKeys(): Set<String>
     suspend fun getAllBlobNames(): Set<String>
     
@@ -413,8 +447,8 @@ interface SecureStorage {
 
 ### Issue: `SecureStoreException.InitializationException`
 
-**Cause**: Tink initialization failed  
-**Solution**: Ensure app has proper permissions and Android Keystore is available
+**Cause**: Tink initialization failed, or, for a `DEVICE_PROTECTED` store that already holds data, the device has not been unlocked since upgrading from 1.0.0 (its keysets are moved to device-protected storage on first unlock)  
+**Solution**: Ensure Android Keystore is available; for the upgrade case, retry after the first unlock
 
 ### Issue: `SecureStoreException.HardwareRequiredException`
 
@@ -425,6 +459,11 @@ interface SecureStorage {
 
 **Cause**: Android Keystore keys are deleted on app uninstall  
 **Solution**: This is intentional for security. Use server-side storage for persistence
+
+### Issue: Stored data disappeared without a reinstall
+
+**Cause**: The keysets could no longer be opened, for example because the app's data, or the data of an app sharing its user ID, was cleared. `KeysetLossPolicy.RESET` discarded the data  
+**Solution**: Listen with `onKeysetReset` to detect it and restore what the app needs; see [Lost Keys](#lost-keys)
 
 ### Issue: Performance degradation
 

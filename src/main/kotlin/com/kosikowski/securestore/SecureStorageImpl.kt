@@ -223,7 +223,7 @@ class SecureStorageImpl(
             .getPrimitive(Aead::class.java)
 
     /**
-     * Before 1.1.0 a DEVICE_PROTECTED store kept its keysets in credential-encrypted storage (see
+     * Up to 1.0.0 a DEVICE_PROTECTED store kept its keysets in credential-encrypted storage (see
      * [KeysetStorageContext]). Moves them next to the data, once. That location cannot be read before
      * the first unlock, and creating new keysets instead would make the existing data unreadable, so a
      * store that already holds data refuses to open until then.

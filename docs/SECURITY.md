@@ -42,6 +42,7 @@ All algorithms provide:
 - **Protection**: Keys never leave secure hardware
 - **Generation**: Cryptographically secure random generation
 - **Isolation**: Separate keys for preferences, files, and metadata
+- **Keyset location**: Keysets are stored next to the data they protect; `DEVICE_PROTECTED` keeps both in device-protected storage
 
 ### Metadata Protection
 
@@ -260,7 +261,12 @@ Keys are lost when:
 - App is uninstalled
 - User changes lock screen security (on some devices)
 - User clears app data
+- The data of another app sharing the same `android:sharedUserId` is cleared: Android deletes the Keystore keys of the whole user ID
 - Device is factory reset
+
+When the keys are lost, or a keyset is corrupted, the data cannot be recovered. `KeysetLossPolicy.RESET`
+(default) discards it and starts with new keysets, reporting through `onKeysetReset`;
+`KeysetLossPolicy.THROW` throws `KeysetLostException` until `reset()` is called.
 
 ### 4. Screen Lock Requirement
 - **Requirement**: Device must have a screen lock for hardware-backed keys
@@ -303,6 +309,7 @@ SecureStore provides specific exceptions for security-related failures:
 | `DecryptionException` | Possible data tampering or key issues |
 | `KeystoreException` | Android Keystore compromise or corruption |
 | `InitializationException` | Cryptographic system failure |
+| `KeysetLostException` | Keys deleted or keyset corrupted; stored data is unrecoverable |
 
 ```kotlin
 try {

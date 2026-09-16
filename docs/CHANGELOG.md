@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `KeysetLossPolicy` and `SecureStoreConfig.Builder.keysetLossPolicy()`: what to do when the keysets can no longer be opened because the Keystore master key was deleted or a keyset is corrupted. `RESET` (default) discards the unreadable data and continues with new keysets; `THROW` throws the new `SecureStoreException.KeysetLostException` until `reset()` is called
+- `SecureStoreConfig.Builder.onKeysetReset()`: called once, with the cause, after `RESET` discarded the stored data
+- `SecureStorage.reset()`: deletes all stored data together with its keysets; works when the keysets can no longer be opened
+
+### Changed
+
+- `DEVICE_PROTECTED` stores keep their keysets in device-protected storage. Keysets written by 1.0.0 are moved on the first open after the user has unlocked; until then a store that already holds data throws `InitializationException`
+- `getString`, `getObject` and `readBlob` throw `InitializationException` or `KeysetLostException` when the store cannot be opened, instead of applying `decryptionFailurePolicy` (which returned null by default). `removeString` and `clearAll` throw them as-is instead of wrapping them in `StorageException`
+- `SecureStorage` has a new abstract method, `reset()`; custom implementations must implement it
+
+### Fixed
+
+- A store whose Keystore master key was deleted, for example by clearing the data of the app or of another app sharing its user ID, failed on every operation until the app was reinstalled
+- `DEVICE_PROTECTED` stores kept their keysets in credential-encrypted storage, because Tink reads keysets through `Context.getApplicationContext()`, so they could not be opened before the first unlock
+
 
 ## [1.0.0] - 2025-11-28
 
