@@ -267,13 +267,19 @@ class SecureStorageImpl(
         }
 
     private fun keysetAead(keysetName: String, prefFileName: String): Aead =
+        keysetManager(keysetName, prefFileName).keysetHandle.getPrimitive(Aead::class.java)
+
+    private fun keysetManager(keysetName: String, prefFileName: String): AndroidKeysetManager =
         AndroidKeysetManager.Builder()
             .withSharedPref(keysetContext, keysetName, prefFileName)
             .withKeyTemplate(config.encryption.keyTemplate)
             .withMasterKeyUri(masterKeyUri)
             .build()
-            .keysetHandle
-            .getPrimitive(Aead::class.java)
+
+    private fun addPrimaryKey(keysetName: String, prefFileName: String) {
+        val manager = keysetManager(keysetName, prefFileName).add(config.encryption.keyTemplate)
+        manager.setPrimary(manager.keysetHandle.keysetInfo.keyInfoList.last().keyId)
+    }
 
     private fun nameKeyset(): KeysetHandle =
         AndroidKeysetManager.Builder()
@@ -643,6 +649,21 @@ class SecureStorageImpl(
                 } catch (e: Exception) {
                     throw SecureStoreException.StorageException("Failed to clear all data", e)
                 }
+            }
+        }
+    }
+
+    override suspend fun rotateKeys(): Unit = withContext(config.ioDispatcher) {
+        currentKeysets()
+        notifyPendingReset()
+        shared.lock.write {
+            try {
+                addPrimaryKey(tinkKeysetPref, tinkKeysetName)
+                addPrimaryKey(tinkPrefsKeysetPref, tinkPrefsKeysetName)
+            } catch (e: GeneralSecurityException) {
+                throw SecureStoreException.KeystoreException("Failed to rotate keys", e)
+            } finally {
+                shared.generation++
             }
         }
     }

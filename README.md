@@ -199,6 +199,17 @@ try {
 }
 ```
 
+### Key Rotation
+
+```kotlin
+secureStorage.rotateKeys()
+```
+
+Adds a new key to the keysets that encrypt values and blobs and uses it for all later writes. Existing
+data stays readable with the earlier keys, which remain in the keysets; a value or blob moves to the new
+key the next time it is written. The new key uses the configured `encryption`, so rotating also switches a
+store to a newly configured algorithm. Name encryption keeps its key.
+
 ## Configuration Presets
 
 ### `SecureStoreConfig.DEFAULT`
@@ -418,6 +429,7 @@ interface SecureStorage {
     // Bulk operations
     suspend fun clearAll()
     suspend fun reset()
+    suspend fun rotateKeys()
     suspend fun getAllKeys(): Set<String>
     suspend fun getAllBlobNames(): Set<String>
     

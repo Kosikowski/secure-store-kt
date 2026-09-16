@@ -154,6 +154,16 @@ interface SecureStorage {
     suspend fun reset()
 
     /**
+     * Adds a new key, created with the configured [SecureStoreConfig.encryption], to the keysets that
+     * encrypt values and blobs, and uses it for everything written from then on. Earlier keys stay in the
+     * keysets, so existing data remains readable; a value or blob is encrypted with the new key the next
+     * time it is written. Names keep their key, because an encrypted name must not change to be found.
+     *
+     * @throws SecureStoreException.KeystoreException if a keyset cannot be updated
+     */
+    suspend fun rotateKeys()
+
+    /**
      * Lists all stored keys in SharedPreferences.
      *
      * Note: If key encryption is enabled, returned keys are decrypted.

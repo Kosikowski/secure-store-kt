@@ -140,7 +140,7 @@ enum class KeysetLossPolicy {
  * @property masterKeyAlias Master key alias in Android Keystore
  * @property ioDispatcher Coroutine dispatcher for IO operations
  * @property secureMemory Whether to wipe sensitive data from memory after use
- * @property enableKeyRotation Enable key rotation support
+ * @property enableKeyRotation Has no effect; see [SecureStorage.rotateKeys]
  * @property keysetLossPolicy Policy when the keysets can no longer be opened
  * @property onKeysetReset Called when [KeysetLossPolicy.RESET] discarded the stored data
  */
@@ -156,6 +156,7 @@ class SecureStoreConfig private constructor(
     val masterKeyAlias: String,
     val ioDispatcher: CoroutineDispatcher,
     val secureMemory: Boolean,
+    @Deprecated(KEY_ROTATION_DEPRECATION, ReplaceWith("false"))
     val enableKeyRotation: Boolean,
     val keysetLossPolicy: KeysetLossPolicy,
     val onKeysetReset: (cause: Throwable) -> Unit,
@@ -261,10 +262,10 @@ class SecureStoreConfig private constructor(
         fun secureMemory(enabled: Boolean) = apply { this.secureMemory = enabled }
 
         /**
-         * Enable key rotation support.
-         * When enabled, old keys are kept for decryption while new data uses the latest key.
-         * Default: false
+         * Has no effect. Keysets always keep earlier keys, and keys are rotated by calling
+         * [SecureStorage.rotateKeys].
          */
+        @Deprecated(KEY_ROTATION_DEPRECATION)
         fun enableKeyRotation(enabled: Boolean) = apply { this.enableKeyRotation = enabled }
 
         /**
@@ -286,6 +287,7 @@ class SecureStoreConfig private constructor(
         /**
          * Build the configuration.
          */
+        @Suppress("DEPRECATION")
         fun build(): SecureStoreConfig = SecureStoreConfig(
             encryption = encryption,
             keyProtection = keyProtection,
@@ -307,6 +309,7 @@ class SecureStoreConfig private constructor(
     /**
      * Create a new builder pre-populated with this config's values.
      */
+    @Suppress("DEPRECATION")
     fun toBuilder(): Builder = Builder()
         .encryption(encryption)
         .keyProtection(keyProtection)
@@ -324,6 +327,9 @@ class SecureStoreConfig private constructor(
         .onKeysetReset(onKeysetReset)
 
     companion object {
+        private const val KEY_ROTATION_DEPRECATION =
+            "Has no effect: keysets always keep earlier keys, and keys are rotated with SecureStorage.rotateKeys()."
+
         /**
          * Default configuration.
          * - AES-256-GCM encryption

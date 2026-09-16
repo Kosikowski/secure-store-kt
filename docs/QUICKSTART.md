@@ -140,6 +140,7 @@ interface SecureStorage {
     // Bulk
     suspend fun clearAll()
     suspend fun reset()
+    suspend fun rotateKeys()
     suspend fun getAllKeys(): Set<String>
     suspend fun getAllBlobNames(): Set<String>
     

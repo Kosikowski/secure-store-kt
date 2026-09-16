@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `KeysetLossPolicy` and `SecureStoreConfig.Builder.keysetLossPolicy()`: what to do when the keysets can no longer be opened because the Keystore master key was deleted or a keyset is corrupted. `RESET` (default) discards the unreadable data and continues with new keysets; `THROW` throws the new `SecureStoreException.KeysetLostException` until `reset()` is called
 - `SecureStoreConfig.Builder.onKeysetReset()`: called once, with the cause, after `RESET` discarded the stored data
 - `SecureStorage.reset()`: deletes all stored data together with its keysets; works when the keysets can no longer be opened
+- `SecureStorage.rotateKeys()`: adds a new primary key, created with the configured algorithm, to the keysets that encrypt values and blobs; earlier keys stay so existing data remains readable
 
 ### Changed
 
@@ -21,7 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `DEVICE_PROTECTED` stores keep their keysets in device-protected storage. Keysets written by 1.0.0 are copied on the first open after the user has unlocked, leaving the originals for a `CREDENTIAL_PROTECTED` store with the same namespace; until then a store that already holds data throws `InitializationException`
 - Every operation except `getStoreInfo` throws `InitializationException` or `KeysetLostException` when the store cannot be opened. Reads no longer apply `decryptionFailurePolicy` to it (which returned null by default), `removeString` and `clearAll` no longer wrap it in `StorageException`, and `blobExists`, `deleteBlob` and `getAllBlobNames` now open the store as well
 - Instances with the same storage mode and namespace share their state within a process: a reset through one of them applies to all, and operations and resets on the store wait for each other
-- `SecureStorage` has a new abstract method, `reset()`; custom implementations must implement it
+- `SecureStorage` has new abstract methods, `reset()` and `rotateKeys()`; custom implementations must implement them
+
+### Deprecated
+
+- `SecureStoreConfig.enableKeyRotation` and `SecureStoreConfig.Builder.enableKeyRotation()` never had any effect. Keysets always keep earlier keys; use `SecureStorage.rotateKeys()` to rotate
 
 ### Fixed
 
