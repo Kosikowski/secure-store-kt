@@ -256,17 +256,22 @@ class SecureStorageImpl(
             true
         }
 
+    /**
+     * Data goes first: if a deletion fails, the keysets are still there and still unreadable, so the
+     * next open retries the recovery instead of creating keysets next to data they cannot decrypt.
+     */
     private fun deleteKeysetsAndData() {
-        val keysetFiles = listOf(tinkKeysetName, tinkPrefsKeysetName, tinkMetadataKeysetName)
-        keysetFiles.forEach { deleteSharedPreferencesOrThrow(keysetContext, it) }
-        if (config.storageMode == StorageMode.DEVICE_PROTECTED && isUserUnlocked()) {
-            keysetFiles.forEach { deleteSharedPreferencesOrThrow(appContext, it) }
-        }
         deleteSharedPreferencesOrThrow(storageContext, sharedPrefsName)
         storageDirectory.listFiles()?.forEach { file ->
             if (!file.delete()) throw IOException("Failed to delete $file")
         }
         fileLocks.clear()
+
+        val keysetFiles = listOf(tinkKeysetName, tinkPrefsKeysetName, tinkMetadataKeysetName)
+        keysetFiles.forEach { deleteSharedPreferencesOrThrow(keysetContext, it) }
+        if (config.storageMode == StorageMode.DEVICE_PROTECTED && isUserUnlocked()) {
+            keysetFiles.forEach { deleteSharedPreferencesOrThrow(appContext, it) }
+        }
     }
 
     private fun deleteSharedPreferencesOrThrow(context: Context, name: String) {
