@@ -3,6 +3,7 @@ package com.kosikowski.securestore
 import android.content.Context
 import android.content.SharedPreferences
 import android.os.Build
+import android.os.UserManager
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import com.google.crypto.tink.Aead
@@ -125,72 +126,108 @@ class SecureStorageImpl(
     }
 
     /**
-     * AEAD primitive for file encryption/decryption.
-     * Uses Android Keystore integration to protect the encryption key.
+     * Where the keysets are stored: next to the data they protect. See [KeysetStorageContext].
      */
-    private val aead: Aead by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
-        try {
-            val keysetHandle = AndroidKeysetManager.Builder()
-                .withSharedPref(storageContext, tinkKeysetPref, tinkKeysetName)
-                .withKeyTemplate(config.encryption.keyTemplate)
-                .withMasterKeyUri(masterKeyUri)
-                .build()
-                .keysetHandle
-
-            keysetHandle.getPrimitive(Aead::class.java)
-        } catch (e: Exception) {
-            throw SecureStoreException.InitializationException("Failed to create AEAD primitive", e)
+    private val keysetContext: Context by lazy {
+        when (config.storageMode) {
+            StorageMode.DEVICE_PROTECTED -> KeysetStorageContext(storageContext)
+            StorageMode.CREDENTIAL_PROTECTED -> appContext
         }
     }
 
+    private class Keysets(
+        val fileAead: Aead,
+        val metadataAead: Aead?,
+        val preferences: SharedPreferences,
+    )
+
+    @Volatile
+    private var openKeysets: Keysets? = null
+
+    private val keysetLock = Any()
+
+    /** AEAD primitive for file encryption/decryption. */
+    private val aead: Aead
+        get() = keysets().fileAead
+
+    /** AEAD for key/filename encryption when enabled. */
+    private val metadataAead: Aead?
+        get() = keysets().metadataAead
+
+    /** SharedPreferences with Tink encryption for key-value storage. */
+    private val sharedPreferences: SharedPreferences
+        get() = keysets().preferences
+
     /**
-     * AEAD for key/filename encryption when enabled.
+     * The file, preferences and (when enabled) metadata keysets, opened together: they are protected
+     * by the same master key and are lost together. Separate keysets for defense in depth.
      */
-    private val metadataAead: Aead? by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
-        if (!config.encryptKeys && !config.encryptFileNames) {
-            return@lazy null
+    private fun keysets(): Keysets =
+        openKeysets ?: synchronized(keysetLock) {
+            openKeysets ?: openKeysetsOrThrow().also { openKeysets = it }
         }
 
-        try {
-            val keysetHandle = AndroidKeysetManager.Builder()
-                .withSharedPref(storageContext, tinkMetadataKeysetPref, tinkMetadataKeysetName)
-                .withKeyTemplate(config.encryption.keyTemplate)
-                .withMasterKeyUri(masterKeyUri)
-                .build()
-                .keysetHandle
-
-            keysetHandle.getPrimitive(Aead::class.java)
-        } catch (e: Exception) {
-            throw SecureStoreException.InitializationException("Failed to create metadata AEAD", e)
-        }
-    }
-
-    /**
-     * SharedPreferences with Tink encryption for key-value storage.
-     * Uses a separate keyset from file encryption for defense in depth.
-     */
-    private val sharedPreferences: SharedPreferences by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
-        try {
-            val keysetHandle = AndroidKeysetManager.Builder()
-                .withSharedPref(storageContext, tinkPrefsKeysetPref, tinkPrefsKeysetName)
-                .withKeyTemplate(config.encryption.keyTemplate)
-                .withMasterKeyUri(masterKeyUri)
-                .build()
-                .keysetHandle
-
-            val aeadForPrefs = keysetHandle.getPrimitive(Aead::class.java)
-
-            TinkEncryptedSharedPreferences(
-                delegate = storageContext.getSharedPreferences(sharedPrefsName, Context.MODE_PRIVATE),
-                aead = aeadForPrefs,
-                metadataAead = if (config.encryptKeys) metadataAead else null,
-                useAssociatedData = config.useAssociatedData,
-                secureMemory = config.secureMemory,
+    private fun openKeysetsOrThrow(): Keysets {
+        moveLegacyKeysets()
+        return try {
+            val metadata = if (usesMetadataKeyset) keysetAead(tinkMetadataKeysetPref, tinkMetadataKeysetName) else null
+            Keysets(
+                fileAead = keysetAead(tinkKeysetPref, tinkKeysetName),
+                metadataAead = metadata,
+                preferences =
+                    TinkEncryptedSharedPreferences(
+                        delegate = storageContext.getSharedPreferences(sharedPrefsName, Context.MODE_PRIVATE),
+                        aead = keysetAead(tinkPrefsKeysetPref, tinkPrefsKeysetName),
+                        metadataAead = if (config.encryptKeys) metadata else null,
+                        useAssociatedData = config.useAssociatedData,
+                        secureMemory = config.secureMemory,
+                    ),
             )
         } catch (e: Exception) {
-            throw SecureStoreException.InitializationException("Failed to create encrypted SharedPreferences", e)
+            throw SecureStoreException.InitializationException("Failed to open keysets", e)
         }
     }
+
+    private fun keysetAead(keysetName: String, prefFileName: String): Aead =
+        AndroidKeysetManager.Builder()
+            .withSharedPref(keysetContext, keysetName, prefFileName)
+            .withKeyTemplate(config.encryption.keyTemplate)
+            .withMasterKeyUri(masterKeyUri)
+            .build()
+            .keysetHandle
+            .getPrimitive(Aead::class.java)
+
+    /**
+     * Before 1.1.0 a DEVICE_PROTECTED store kept its keysets in credential-encrypted storage (see
+     * [KeysetStorageContext]). Moves them next to the data, once. That location cannot be read before
+     * the first unlock, and creating new keysets instead would make the existing data unreadable, so a
+     * store that already holds data refuses to open until then.
+     */
+    private fun moveLegacyKeysets() {
+        if (config.storageMode != StorageMode.DEVICE_PROTECTED) return
+
+        val missing = usedKeysetFileNames.filterNot { storageContext.sharedPreferencesFile(it).exists() }
+        if (missing.isEmpty()) return
+
+        if (!isUserUnlocked()) {
+            if (!hasStoredData()) return
+            throw SecureStoreException.InitializationException(
+                "Secure storage is unavailable until the device is unlocked for the first time after upgrading",
+            )
+        }
+        for (name in missing) {
+            if (!storageContext.moveSharedPreferencesFrom(appContext, name)) {
+                throw SecureStoreException.InitializationException("Failed to move keyset $name to device-protected storage")
+            }
+        }
+    }
+
+    private fun Context.sharedPreferencesFile(name: String): File = File(dataDir, "shared_prefs/$name.xml")
+
+    private fun isUserUnlocked(): Boolean = appContext.getSystemService(UserManager::class.java)?.isUserUnlocked ?: true
+
+    private fun hasStoredData(): Boolean =
+        storageContext.sharedPreferencesFile(sharedPrefsName).exists() || !storageDirectory.list().isNullOrEmpty()
 
     private val storageDirectory: File by lazy {
         File(storageContext.filesDir, secureFileDir).apply {
@@ -233,6 +270,12 @@ class SecureStorageImpl(
 
     private val tinkMetadataKeysetName: String
         get() = "secure_storage_metadata_key_${config.namespace}"
+
+    private val usesMetadataKeyset: Boolean
+        get() = config.encryptKeys || config.encryptFileNames
+
+    private val usedKeysetFileNames: List<String>
+        get() = listOfNotNull(tinkKeysetName, tinkPrefsKeysetName, tinkMetadataKeysetName.takeIf { usesMetadataKeyset })
 
     // ==================== String Operations ====================
 
