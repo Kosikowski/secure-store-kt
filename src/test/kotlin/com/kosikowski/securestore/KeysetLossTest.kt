@@ -4,6 +4,7 @@ import com.google.crypto.tink.shaded.protobuf.InvalidProtocolBufferException
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.CharConversionException
 import java.io.IOException
 import java.security.InvalidKeyException
 import java.security.KeyStoreException
@@ -26,6 +27,11 @@ class KeysetLossTest {
     @Test
     fun keysetThatNoLongerParses_isLost() {
         assertTrue(InvalidProtocolBufferException("corrupt keyset").isLostKeyset(keyPresent))
+    }
+
+    @Test
+    fun keysetThatIsNotHex_isLost() {
+        assertTrue(CharConversionException("can't read keyset; the pref value is not a valid hex string").isLostKeyset(keyPresent))
     }
 
     @Test

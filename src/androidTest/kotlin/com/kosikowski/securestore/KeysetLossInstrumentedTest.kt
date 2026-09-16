@@ -76,21 +76,20 @@ class KeysetLossInstrumentedTest {
         }
 
     @Test
-    fun corruptKeyset_resetPolicy_recovers() =
+    fun keysetThatNoLongerParses_resetPolicy_recovers() = assertResetRecoversFrom(corruptKeyset = "0a0b0c0d0e0f")
+
+    @Test
+    fun keysetThatIsNotHex_resetPolicy_recovers() = assertResetRecoversFrom(corruptKeyset = "not hex")
+
+    @Test
+    fun keysetThatIsNotHex_throwPolicy_throwsKeysetLost() =
         runBlocking {
-            storeValueAndBlob(KeysetLossPolicy.RESET)
-            context.createDeviceProtectedStorageContext()
-                .getSharedPreferences("secure_storage_prefs_key_$namespace", Context.MODE_PRIVATE)
-                .edit()
-                .putString("secure_storage_prefs_keyset_pref_$namespace", "0a0b0c0d0e0f")
-                .commit()
+            storeValueAndBlob(KeysetLossPolicy.THROW)
+            corruptPrefsKeyset("not hex")
 
-            val storage = SecureStorageImpl(context, config(KeysetLossPolicy.RESET))
+            val storage = SecureStorageImpl(context, config(KeysetLossPolicy.THROW))
 
-            assertNull(storage.getString(KEY))
-            assertEquals(1, resets.size)
-            storage.putString(KEY, NEW_VALUE)
-            assertEquals(NEW_VALUE, storage.getString(KEY))
+            assertKeysetLost { storage.getString(KEY) }
         }
 
     @Test
@@ -108,6 +107,28 @@ class KeysetLossInstrumentedTest {
             assertEquals(NEW_VALUE, SecureStorageImpl(context, config(KeysetLossPolicy.RESET)).getString(KEY))
             assertTrue(resets.isEmpty())
         }
+
+    private fun assertResetRecoversFrom(corruptKeyset: String) =
+        runBlocking {
+            storeValueAndBlob(KeysetLossPolicy.RESET)
+            corruptPrefsKeyset(corruptKeyset)
+
+            val storage = SecureStorageImpl(context, config(KeysetLossPolicy.RESET))
+
+            assertNull(storage.getString(KEY))
+            assertFalse(storage.blobExists(BLOB))
+            assertEquals(1, resets.size)
+            storage.putString(KEY, NEW_VALUE)
+            assertEquals(NEW_VALUE, storage.getString(KEY))
+        }
+
+    private fun corruptPrefsKeyset(value: String) {
+        context.createDeviceProtectedStorageContext()
+            .getSharedPreferences("secure_storage_prefs_key_$namespace", Context.MODE_PRIVATE)
+            .edit()
+            .putString("secure_storage_prefs_keyset_pref_$namespace", value)
+            .commit()
+    }
 
     private suspend fun storeValueAndBlob(policy: KeysetLossPolicy) {
         SecureStorageImpl(context, config(policy)).apply {
