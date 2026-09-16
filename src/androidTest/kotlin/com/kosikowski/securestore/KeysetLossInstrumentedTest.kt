@@ -63,8 +63,16 @@ class KeysetLossInstrumentedTest {
                 SecureStorageImpl(context, config(KeysetLossPolicy.THROW, decryptionFailurePolicy = DecryptionFailurePolicy.RETURN_NULL))
 
             assertKeysetLost { storage.getString(KEY) }
-            assertKeysetLost { storage.readBlob(BLOB) }
             assertKeysetLost { storage.putString(KEY, NEW_VALUE) }
+            assertKeysetLost { storage.removeString(KEY) }
+            assertKeysetLost { storage.contains(KEY) }
+            assertKeysetLost { storage.getAllKeys() }
+            assertKeysetLost { storage.readBlob(BLOB) }
+            assertKeysetLost { storage.saveBlob(BLOB, NEW_BLOB_CONTENT) }
+            assertKeysetLost { storage.blobExists(BLOB) }
+            assertKeysetLost { storage.deleteBlob(BLOB) }
+            assertKeysetLost { storage.getAllBlobNames() }
+            assertKeysetLost { storage.clearAll() }
 
             storage.reset()
 

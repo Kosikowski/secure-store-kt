@@ -19,6 +19,10 @@ import java.io.IOException
 import java.security.GeneralSecurityException
 import java.security.KeyStore
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.locks.ReentrantReadWriteLock
+import kotlin.concurrent.read
+import kotlin.concurrent.write
 
 /**
  * Secure storage implementation using Google Tink for encryption.
@@ -135,46 +139,61 @@ class SecureStorageImpl(
         }
     }
 
+    /**
+     * State shared by every instance with the same storage mode and namespace in this process: they
+     * use the same files. A reset deletes those files, so the generation tells each instance to drop
+     * what it opened, and the lock keeps operations from running with keysets a reset is deleting.
+     */
+    private class SharedState {
+        val lock = ReentrantReadWriteLock()
+
+        @Volatile
+        var generation = 0L
+
+        val fileLocks = ConcurrentHashMap<String, Any>()
+    }
+
     private class Keysets(
+        val generation: Long,
         val fileAead: Aead,
         val metadataAead: Aead?,
         val preferences: SharedPreferences,
     )
 
+    private val shared: SharedState = sharedStates.getOrPut("${config.storageMode}/${config.namespace}") { SharedState() }
+
     @Volatile
     private var openKeysets: Keysets? = null
 
-    private val keysetLock = Any()
+    private val pendingResetCause = AtomicReference<Throwable?>()
 
-    /** AEAD primitive for file encryption/decryption. */
-    private val aead: Aead
-        get() = keysets().fileAead
-
-    /** AEAD for key/filename encryption when enabled. */
-    private val metadataAead: Aead?
-        get() = keysets().metadataAead
-
-    /** SharedPreferences with Tink encryption for key-value storage. */
-    private val sharedPreferences: SharedPreferences
-        get() = keysets().preferences
+    /**
+     * Runs [block] with the keysets, opening them first when needed, under the shared read lock so
+     * that a reset cannot delete the files it uses. [block] cannot suspend while holding the lock.
+     */
+    private fun <T> withKeysets(block: (Keysets) -> T): T {
+        while (true) {
+            val keysets = currentKeysets()
+            pendingResetCause.getAndSet(null)?.let(config.onKeysetReset)
+            shared.lock.read {
+                if (keysets.generation == shared.generation) return block(keysets)
+            }
+        }
+    }
 
     /**
      * The file, preferences and (when enabled) metadata keysets, opened together: they are protected
      * by the same master key and are lost together. Separate keysets for defense in depth.
      */
-    private fun keysets(): Keysets {
-        openKeysets?.let { return it }
-
-        var discarded: Throwable? = null
-        val keysets =
-            synchronized(keysetLock) {
-                openKeysets ?: openKeysetsRecoveringLoss { discarded = it }.also { openKeysets = it }
-            }
-        discarded?.let(config.onKeysetReset)
-        return keysets
+    private fun currentKeysets(): Keysets {
+        openKeysets?.takeIf { it.generation == shared.generation }?.let { return it }
+        shared.lock.write {
+            openKeysets?.takeIf { it.generation == shared.generation }?.let { return it }
+            return openKeysetsRecoveringLoss().also { openKeysets = it }
+        }
     }
 
-    private fun openKeysetsRecoveringLoss(onDiscarded: (Throwable) -> Unit): Keysets {
+    private fun openKeysetsRecoveringLoss(): Keysets {
         copyLegacyKeysets()
         try {
             return openKeysetsOrThrow()
@@ -189,7 +208,7 @@ class SecureStorageImpl(
             } catch (deletion: Exception) {
                 throw SecureStoreException.InitializationException("Failed to discard keysets that can no longer be opened", deletion)
             }
-            onDiscarded(failure)
+            pendingResetCause.set(failure)
         }
         return openKeysetsOrThrow()
     }
@@ -198,6 +217,7 @@ class SecureStorageImpl(
         try {
             val metadata = if (usesMetadataKeyset) keysetAead(tinkMetadataKeysetPref, tinkMetadataKeysetName) else null
             Keysets(
+                generation = shared.generation,
                 fileAead = keysetAead(tinkKeysetPref, tinkKeysetName),
                 metadataAead = metadata,
                 preferences =
@@ -272,13 +292,17 @@ class SecureStorageImpl(
      * next open retries the recovery instead of creating keysets next to data they cannot decrypt.
      */
     private fun deleteKeysetsAndData() {
-        deleteSharedPreferencesOrThrow(storageContext, sharedPrefsName)
-        storageDirectory.listFiles()?.forEach { file ->
-            if (!file.delete()) throw IOException("Failed to delete $file")
-        }
-        fileLocks.clear()
+        try {
+            deleteSharedPreferencesOrThrow(storageContext, sharedPrefsName)
+            storageDirectory.listFiles()?.forEach { file ->
+                if (!file.delete()) throw IOException("Failed to delete $file")
+            }
+            shared.fileLocks.clear()
 
-        listOf(tinkKeysetName, tinkPrefsKeysetName, tinkMetadataKeysetName).forEach { deleteSharedPreferencesOrThrow(keysetContext, it) }
+            listOf(tinkKeysetName, tinkPrefsKeysetName, tinkMetadataKeysetName).forEach { deleteSharedPreferencesOrThrow(keysetContext, it) }
+        } finally {
+            shared.generation++
+        }
     }
 
     private fun deleteSharedPreferencesOrThrow(context: Context, name: String) {
@@ -298,10 +322,7 @@ class SecureStorageImpl(
         }
     }
 
-    // File-level locks to prevent concurrent access to the same file
-    private val fileLocks = ConcurrentHashMap<String, Any>()
-
-    private fun getFileLock(fileName: String): Any = fileLocks.getOrPut(fileName) { Any() }
+    private fun getFileLock(fileName: String): Any = shared.fileLocks.getOrPut(fileName) { Any() }
 
     // ==================== Computed Properties ====================
 
@@ -344,42 +365,39 @@ class SecureStorageImpl(
     // ==================== String Operations ====================
 
     override suspend fun putString(key: String, value: String) = withContext(config.ioDispatcher) {
-        try {
-            sharedPreferences
-                .edit()
-                .putString(key, value)
-                .commitOrThrow()
-        } catch (e: SecureStoreException) {
-            throw e
-        } catch (e: Exception) {
-            throw SecureStoreException.StorageException("Failed to store string for key: $key", e)
+        withKeysets { keysets ->
+            try {
+                keysets.preferences
+                    .edit()
+                    .putString(key, value)
+                    .commitOrThrow()
+            } catch (e: SecureStoreException) {
+                throw e
+            } catch (e: Exception) {
+                throw SecureStoreException.StorageException("Failed to store string for key: $key", e)
+            }
         }
     }
 
     override suspend fun getString(key: String): String? = withContext(config.ioDispatcher) {
-        try {
-            sharedPreferences.getString(key, null)
-        } catch (e: Exception) {
-            handleDecryptionFailure(key, e)
+        withKeysets { keysets ->
+            try {
+                keysets.preferences.getString(key, null)
+            } catch (e: Exception) {
+                handleDecryptionFailure(keysets, key, e)
+            }
         }
     }
 
     override suspend fun removeString(key: String) = withContext(config.ioDispatcher) {
-        try {
-            sharedPreferences
-                .edit()
-                .remove(key)
-                .commitOrThrow()
-        } catch (e: SecureStoreException) {
-            throw e
-        } catch (e: Exception) {
-            throw SecureStoreException.StorageException("Failed to remove string for key: $key", e)
-        }
+        withKeysets { keysets -> removeValue(keysets, key) }
     }
 
     override suspend fun contains(key: String): Boolean = withContext(config.ioDispatcher) {
-        val storageKey = if (config.encryptKeys) encryptKey(key) else key
-        sharedPreferences.contains(storageKey)
+        withKeysets { keysets ->
+            val storageKey = if (config.encryptKeys) keysets.encryptKey(key) else key
+            keysets.preferences.contains(storageKey)
+        }
     }
 
     // ==================== Object Operations ====================
@@ -395,15 +413,17 @@ class SecureStorageImpl(
             throw SecureStoreException.SerializationException("Failed to serialize object for key: $key", e)
         }
 
-        try {
-            sharedPreferences
-                .edit()
-                .putString(key, payload)
-                .commitOrThrow()
-        } catch (e: SecureStoreException) {
-            throw e
-        } catch (e: Exception) {
-            throw SecureStoreException.StorageException("Failed to store object for key: $key", e)
+        withKeysets { keysets ->
+            try {
+                keysets.preferences
+                    .edit()
+                    .putString(key, payload)
+                    .commitOrThrow()
+            } catch (e: SecureStoreException) {
+                throw e
+            } catch (e: Exception) {
+                throw SecureStoreException.StorageException("Failed to store object for key: $key", e)
+            }
         }
     }
 
@@ -411,24 +431,26 @@ class SecureStorageImpl(
         key: String,
         serializer: KSerializer<T>,
     ): T? = withContext(config.ioDispatcher) {
-        val raw = try {
-            sharedPreferences.getString(key, null)
-        } catch (e: Exception) {
-            return@withContext handleDecryptionFailure(key, e)
-        }
-
-        raw?.let {
-            try {
-                json.decodeFromString(serializer, it)
+        withKeysets { keysets ->
+            val raw = try {
+                keysets.preferences.getString(key, null)
             } catch (e: Exception) {
-                when (config.decryptionFailurePolicy) {
-                    DecryptionFailurePolicy.THROW_EXCEPTION ->
-                        throw SecureStoreException.SerializationException("Failed to deserialize object for key: $key", e)
-                    DecryptionFailurePolicy.DELETE_AND_RETURN_NULL -> {
-                        removeString(key)
-                        null
+                return@withKeysets handleDecryptionFailure(keysets, key, e)
+            }
+
+            raw?.let {
+                try {
+                    json.decodeFromString(serializer, it)
+                } catch (e: Exception) {
+                    when (config.decryptionFailurePolicy) {
+                        DecryptionFailurePolicy.THROW_EXCEPTION ->
+                            throw SecureStoreException.SerializationException("Failed to deserialize object for key: $key", e)
+                        DecryptionFailurePolicy.DELETE_AND_RETURN_NULL -> {
+                            removeValue(keysets, key)
+                            null
+                        }
+                        DecryptionFailurePolicy.RETURN_NULL -> null
                     }
-                    DecryptionFailurePolicy.RETURN_NULL -> null
                 }
             }
         }
@@ -439,91 +461,101 @@ class SecureStorageImpl(
     // ==================== Blob Operations ====================
 
     override suspend fun saveBlob(fileName: String, payload: ByteArray) = withContext(config.ioDispatcher) {
-        val storageFileName = if (config.encryptFileNames) encryptFileName(fileName) else fileName
-        val associatedData = if (config.useAssociatedData) fileName.toByteArray(Charsets.UTF_8) else null
+        withKeysets { keysets ->
+            val storageFileName = if (config.encryptFileNames) keysets.encryptFileName(fileName) else fileName
+            val associatedData = if (config.useAssociatedData) fileName.toByteArray(Charsets.UTF_8) else null
 
-        synchronized(getFileLock(storageFileName)) {
-            try {
-                val ciphertext = aead.encrypt(payload, associatedData)
-                getFile(storageFileName).writeBytes(ciphertext)
+            synchronized(getFileLock(storageFileName)) {
+                try {
+                    val ciphertext = keysets.fileAead.encrypt(payload, associatedData)
+                    getFile(storageFileName).writeBytes(ciphertext)
 
-                if (config.secureMemory) {
-                    payload.fill(0)
+                    if (config.secureMemory) {
+                        payload.fill(0)
+                    }
+                } catch (e: GeneralSecurityException) {
+                    throw SecureStoreException.EncryptionException("Failed to encrypt blob: $fileName", e)
+                } catch (e: IOException) {
+                    throw SecureStoreException.StorageException("Failed to write blob: $fileName", e)
                 }
-            } catch (e: GeneralSecurityException) {
-                throw SecureStoreException.EncryptionException("Failed to encrypt blob: $fileName", e)
-            } catch (e: IOException) {
-                throw SecureStoreException.StorageException("Failed to write blob: $fileName", e)
             }
         }
     }
 
     override suspend fun readBlob(fileName: String): ByteArray? = withContext(config.ioDispatcher) {
-        val storageFileName = if (config.encryptFileNames) encryptFileName(fileName) else fileName
-        val associatedData = if (config.useAssociatedData) fileName.toByteArray(Charsets.UTF_8) else null
+        withKeysets { keysets ->
+            val storageFileName = if (config.encryptFileNames) keysets.encryptFileName(fileName) else fileName
+            val associatedData = if (config.useAssociatedData) fileName.toByteArray(Charsets.UTF_8) else null
 
-        synchronized(getFileLock(storageFileName)) {
-            val target = getFile(storageFileName)
-            if (!target.exists()) return@withContext null
+            synchronized(getFileLock(storageFileName)) {
+                val target = getFile(storageFileName)
+                if (!target.exists()) return@withKeysets null
 
-            try {
-                val ciphertext = target.readBytes()
-                val plaintext = aead.decrypt(ciphertext, associatedData)
+                try {
+                    val ciphertext = target.readBytes()
+                    val plaintext = keysets.fileAead.decrypt(ciphertext, associatedData)
 
-                if (config.secureMemory) {
-                    ciphertext.fill(0)
+                    if (config.secureMemory) {
+                        ciphertext.fill(0)
+                    }
+
+                    plaintext
+                } catch (e: Exception) {
+                    handleBlobDecryptionFailure(fileName, storageFileName, e)
                 }
-
-                plaintext
-            } catch (e: Exception) {
-                handleBlobDecryptionFailure(fileName, storageFileName, e)
             }
         }
     }
 
     override suspend fun deleteBlob(fileName: String): Boolean = withContext(config.ioDispatcher) {
-        val storageFileName = if (config.encryptFileNames) encryptFileName(fileName) else fileName
+        withKeysets { keysets ->
+            val storageFileName = if (config.encryptFileNames) keysets.encryptFileName(fileName) else fileName
 
-        synchronized(getFileLock(storageFileName)) {
-            val result = getFile(storageFileName).delete()
-            if (result) {
-                fileLocks.remove(storageFileName)
+            synchronized(getFileLock(storageFileName)) {
+                val result = getFile(storageFileName).delete()
+                if (result) {
+                    shared.fileLocks.remove(storageFileName)
+                }
+                result
             }
-            result
         }
     }
 
     override suspend fun blobExists(fileName: String): Boolean = withContext(config.ioDispatcher) {
-        val storageFileName = if (config.encryptFileNames) encryptFileName(fileName) else fileName
-        getFile(storageFileName).exists()
+        withKeysets { keysets ->
+            val storageFileName = if (config.encryptFileNames) keysets.encryptFileName(fileName) else fileName
+            getFile(storageFileName).exists()
+        }
     }
 
     // ==================== Bulk Operations ====================
 
     override suspend fun clearAll(): Unit = withContext(config.ioDispatcher) {
-        synchronized(this@SecureStorageImpl) {
-            try {
-                sharedPreferences
-                    .edit()
-                    .clear()
-                    .commitOrThrow()
+        withKeysets { keysets ->
+            synchronized(shared) {
+                try {
+                    keysets.preferences
+                        .edit()
+                        .clear()
+                        .commitOrThrow()
 
-                storageDirectory.listFiles()?.forEach { file ->
-                    synchronized(getFileLock(file.name)) {
-                        file.delete()
+                    storageDirectory.listFiles()?.forEach { file ->
+                        synchronized(getFileLock(file.name)) {
+                            file.delete()
+                        }
                     }
+                    shared.fileLocks.clear()
+                } catch (e: SecureStoreException) {
+                    throw e
+                } catch (e: Exception) {
+                    throw SecureStoreException.StorageException("Failed to clear all data", e)
                 }
-                fileLocks.clear()
-            } catch (e: SecureStoreException) {
-                throw e
-            } catch (e: Exception) {
-                throw SecureStoreException.StorageException("Failed to clear all data", e)
             }
         }
     }
 
     override suspend fun reset(): Unit = withContext(config.ioDispatcher) {
-        synchronized(keysetLock) {
+        shared.lock.write {
             openKeysets = null
             try {
                 deleteKeysetsAndData()
@@ -534,33 +566,37 @@ class SecureStorageImpl(
     }
 
     override suspend fun getAllKeys(): Set<String> = withContext(config.ioDispatcher) {
-        val allKeys = sharedPreferences.all.keys
-        if (config.encryptKeys && metadataAead != null) {
-            allKeys.mapNotNull { encryptedKey ->
-                try {
-                    decryptKey(encryptedKey)
-                } catch (e: Exception) {
-                    null // Skip keys that can't be decrypted
-                }
-            }.toSet()
-        } else {
-            allKeys.toSet()
+        withKeysets { keysets ->
+            val allKeys = keysets.preferences.all.keys
+            if (config.encryptKeys && keysets.metadataAead != null) {
+                allKeys.mapNotNull { encryptedKey ->
+                    try {
+                        keysets.decryptKey(encryptedKey)
+                    } catch (e: Exception) {
+                        null // Skip keys that can't be decrypted
+                    }
+                }.toSet()
+            } else {
+                allKeys.toSet()
+            }
         }
     }
 
     override suspend fun getAllBlobNames(): Set<String> = withContext(config.ioDispatcher) {
-        val files = storageDirectory.listFiles() ?: return@withContext emptySet()
+        withKeysets { keysets ->
+            val files = storageDirectory.listFiles() ?: return@withKeysets emptySet()
 
-        if (config.encryptFileNames && metadataAead != null) {
-            files.mapNotNull { file ->
-                try {
-                    decryptFileName(file.name)
-                } catch (e: Exception) {
-                    null // Skip files that can't be decrypted
-                }
-            }.toSet()
-        } else {
-            files.map { it.name }.toSet()
+            if (config.encryptFileNames && keysets.metadataAead != null) {
+                files.mapNotNull { file ->
+                    try {
+                        keysets.decryptFileName(file.name)
+                    } catch (e: Exception) {
+                        null // Skip files that can't be decrypted
+                    }
+                }.toSet()
+            } else {
+                files.map { it.name }.toSet()
+            }
         }
     }
 
@@ -577,6 +613,19 @@ class SecureStorageImpl(
     // ==================== Private Helpers ====================
 
     private fun getFile(fileName: String): File = File(storageDirectory, fileName)
+
+    private fun removeValue(keysets: Keysets, key: String) {
+        try {
+            keysets.preferences
+                .edit()
+                .remove(key)
+                .commitOrThrow()
+        } catch (e: SecureStoreException) {
+            throw e
+        } catch (e: Exception) {
+            throw SecureStoreException.StorageException("Failed to remove string for key: $key", e)
+        }
+    }
 
     private fun SharedPreferences.Editor.commitOrThrow() {
         if (!commit()) {
@@ -603,40 +652,39 @@ class SecureStorageImpl(
         }
     }
 
-    private fun encryptKey(key: String): String {
+    private fun Keysets.encryptKey(key: String): String {
         val metadata = metadataAead ?: return key
         val encrypted = metadata.encrypt(key.toByteArray(Charsets.UTF_8), null)
         return android.util.Base64.encodeToString(encrypted, android.util.Base64.NO_WRAP or android.util.Base64.URL_SAFE)
     }
 
-    private fun decryptKey(encryptedKey: String): String {
+    private fun Keysets.decryptKey(encryptedKey: String): String {
         val metadata = metadataAead ?: return encryptedKey
         val decoded = android.util.Base64.decode(encryptedKey, android.util.Base64.NO_WRAP or android.util.Base64.URL_SAFE)
         return String(metadata.decrypt(decoded, null), Charsets.UTF_8)
     }
 
-    private fun encryptFileName(fileName: String): String {
+    private fun Keysets.encryptFileName(fileName: String): String {
         val metadata = metadataAead ?: return fileName
         val encrypted = metadata.encrypt(fileName.toByteArray(Charsets.UTF_8), null)
         // Use URL-safe base64 without padding for valid filenames
         return android.util.Base64.encodeToString(encrypted, android.util.Base64.NO_WRAP or android.util.Base64.URL_SAFE)
     }
 
-    private fun decryptFileName(encryptedFileName: String): String {
+    private fun Keysets.decryptFileName(encryptedFileName: String): String {
         val metadata = metadataAead ?: return encryptedFileName
         val decoded = android.util.Base64.decode(encryptedFileName, android.util.Base64.NO_WRAP or android.util.Base64.URL_SAFE)
         return String(metadata.decrypt(decoded, null), Charsets.UTF_8)
     }
 
-    private fun <T> handleDecryptionFailure(key: String, e: Exception): T? {
-        rethrowIfStoreUnavailable(e)
+    private fun <T> handleDecryptionFailure(keysets: Keysets, key: String, e: Exception): T? {
         return when (config.decryptionFailurePolicy) {
             DecryptionFailurePolicy.THROW_EXCEPTION ->
                 throw SecureStoreException.DecryptionException("Failed to decrypt value for key: $key", e)
             DecryptionFailurePolicy.DELETE_AND_RETURN_NULL -> {
                 // Delete asynchronously in a fire-and-forget manner
                 try {
-                    sharedPreferences.edit().remove(key).apply()
+                    keysets.preferences.edit().remove(key).apply()
                 } catch (_: Exception) {
                     // Ignore deletion errors
                 }
@@ -647,14 +695,13 @@ class SecureStorageImpl(
     }
 
     private fun handleBlobDecryptionFailure(originalFileName: String, storageFileName: String, e: Exception): ByteArray? {
-        rethrowIfStoreUnavailable(e)
         return when (config.decryptionFailurePolicy) {
             DecryptionFailurePolicy.THROW_EXCEPTION ->
                 throw SecureStoreException.DecryptionException("Failed to decrypt blob: $originalFileName", e)
             DecryptionFailurePolicy.DELETE_AND_RETURN_NULL -> {
                 try {
                     getFile(storageFileName).delete()
-                    fileLocks.remove(storageFileName)
+                    shared.fileLocks.remove(storageFileName)
                 } catch (_: Exception) {
                     // Ignore deletion errors
                 }
@@ -664,12 +711,10 @@ class SecureStorageImpl(
         }
     }
 
-    private fun rethrowIfStoreUnavailable(e: Exception) {
-        if (e is SecureStoreException.InitializationException || e is SecureStoreException.KeysetLostException) throw e
-    }
-
     private companion object {
         const val ANDROID_KEYSTORE = "AndroidKeyStore"
+
+        val sharedStates = ConcurrentHashMap<String, SharedState>()
     }
 
     /**

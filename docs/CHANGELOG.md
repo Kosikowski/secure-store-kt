@@ -16,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `DEVICE_PROTECTED` stores keep their keysets in device-protected storage. Keysets written by 1.0.0 are copied on the first open after the user has unlocked, leaving the originals for a `CREDENTIAL_PROTECTED` store with the same namespace; until then a store that already holds data throws `InitializationException`
-- `getString`, `getObject` and `readBlob` throw `InitializationException` or `KeysetLostException` when the store cannot be opened, instead of applying `decryptionFailurePolicy` (which returned null by default). `removeString` and `clearAll` throw them as-is instead of wrapping them in `StorageException`
+- Every operation except `getStoreInfo` throws `InitializationException` or `KeysetLostException` when the store cannot be opened. Reads no longer apply `decryptionFailurePolicy` to it (which returned null by default), `removeString` and `clearAll` no longer wrap it in `StorageException`, and `blobExists`, `deleteBlob` and `getAllBlobNames` now open the store as well
+- Instances with the same storage mode and namespace share their state within a process: a reset through one of them applies to all, and operations and resets on the store wait for each other
 - `SecureStorage` has a new abstract method, `reset()`; custom implementations must implement it
 
 ### Fixed

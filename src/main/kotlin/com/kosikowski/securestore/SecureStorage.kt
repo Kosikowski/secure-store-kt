@@ -14,7 +14,7 @@ import kotlinx.serialization.KSerializer
  * Operations may throw [SecureStoreException] subclasses when configured to do so.
  * By default, read operations return null when a value cannot be decrypted. A store that cannot be
  * opened at all throws [SecureStoreException.InitializationException] or, under
- * [KeysetLossPolicy.THROW], [SecureStoreException.KeysetLostException] from every operation.
+ * [KeysetLossPolicy.THROW], [SecureStoreException.KeysetLostException] from every operation except [getStoreInfo].
  *
  * @see SecureStorageImpl
  * @see SecureStoreConfig

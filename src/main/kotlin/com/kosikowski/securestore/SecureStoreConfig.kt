@@ -107,7 +107,7 @@ enum class KeysetLossPolicy {
     RESET,
 
     /**
-     * Throw [SecureStoreException.KeysetLostException] from every operation until
+     * Throw [SecureStoreException.KeysetLostException] from every operation except [SecureStorage.getStoreInfo] until
      * [SecureStorage.reset] is called.
      */
     THROW,

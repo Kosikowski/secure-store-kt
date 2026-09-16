@@ -189,7 +189,7 @@ val config = SecureStoreConfig.Builder()
     .build()
 ```
 
-With `KeysetLossPolicy.THROW` every operation throws `KeysetLostException` until you call `reset()`:
+With `KeysetLossPolicy.THROW` every operation except `getStoreInfo()` throws `KeysetLostException` until you call `reset()`:
 
 ```kotlin
 try {
@@ -373,7 +373,9 @@ val secureStorage = SecureStorageImpl(context, config)
 All operations are thread-safe:
 - **File operations**: Protected by per-file locks
 - **Preferences**: Thread-safe by design
-- **clearAll()**: Uses instance-level lock
+- **clearAll()**: Uses a lock shared by the instances of the store
+- **reset()**: Waits for running operations on the store to finish, and later operations wait for the reset
+- **Several instances**: Instances with the same storage mode and namespace share their state within the process, so a reset through one applies to all of them
 - **Concurrent access**: Multiple threads can safely access different keys/files
 
 ## API Reference
