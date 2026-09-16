@@ -141,7 +141,7 @@ dependencyResolutionManagement {
 
 // In build.gradle.kts
 dependencies {
-    implementation("io.github.kosikowski:securestore:1.0.0")
+    implementation("io.github.kosikowski:securestore:1.1.0")
 }
 ```
 

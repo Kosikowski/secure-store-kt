@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-16
+
 ### Added
 
 - `KeysetLossPolicy` and `SecureStoreConfig.Builder.keysetLossPolicy()`: what to do when the keysets can no longer be opened because the Keystore master key was deleted or a keyset is corrupted. `RESET` (default) discards the unreadable data and continues with new keysets; `THROW` throws the new `SecureStoreException.KeysetLostException` until `reset()` is called
@@ -132,6 +134,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - kotlinx.serialization 1.6.2
 - AndroidX Core KTX 1.12.0
 
-[Unreleased]: https://github.com/Kosikowski/secure-store-kt/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/Kosikowski/secure-store-kt/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/Kosikowski/secure-store-kt/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Kosikowski/secure-store-kt/compare/v0.1.0...v1.0.0
 [0.1.0]: https://github.com/Kosikowski/secure-store-kt/releases/tag/v0.1.0
