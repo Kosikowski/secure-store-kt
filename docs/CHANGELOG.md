@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Recovery from a lost master key no longer treats a Keystore that cannot be reached as a deleted key. Up to Android 11 Keystore lookups report a key as absent when the Keystore service cannot be reached, which `KeysetLossPolicy.RESET` would have answered by deleting the data; a missing key now counts only after the Keystore has created and found a probe key
 - `KeyProtection.HARDWARE_REQUIRED` was never enforced and `getStoreInfo().isHardwareBacked` was always true on Android 6+. Both now check where Android Keystore keeps the master key: operations throw `HardwareRequiredException` when it is not in secure hardware, and `isHardwareBacked` is false until the master key exists. The constructor no longer throws `HardwareRequiredException`, because the key is created on the first operation
 - Concurrent operations on the same blob could read a partially written file and fail to decrypt it: deleting a blob removed its lock while other callers still waited on it, so the next caller created a second lock for the same file
 - With `encryptKeys` or `encryptFileNames`, stored values and blobs could never be found again: names were encrypted with a randomized AEAD, so every lookup produced a different name. `getString` returned null right after `putString`, `readBlob` right after `saveBlob`, and removals had no effect. Names are now encrypted deterministically with AES-SIV, in a separate keyset

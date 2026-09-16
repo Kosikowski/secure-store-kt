@@ -46,6 +46,7 @@ class KeysetLossInstrumentedTest {
             assertNull(storage.readBlob(BLOB))
             assertFalse(storage.blobExists(BLOB))
             assertEquals(1, resets.size)
+            assertFalse("probe key left behind", keyStore().containsAlias("${masterKeyAlias}_probe"))
 
             storage.putString(KEY, NEW_VALUE)
             storage.saveBlob(BLOB, NEW_BLOB_CONTENT)

@@ -24,6 +24,7 @@ import java.io.IOException
 import java.security.GeneralSecurityException
 import java.security.KeyStore
 import java.util.concurrent.ConcurrentHashMap
+import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.SecretKeyFactory
 import java.util.concurrent.atomic.AtomicReference
@@ -343,12 +344,37 @@ class SecureStorageImpl(
 
     private fun Context.sharedPreferencesFile(name: String): File = File(dataDir, "shared_prefs/$name.xml")
 
+    /**
+     * False only when the master key is confirmed gone. Keystore lookups report a key as absent when the
+     * Keystore fails: up to Android 11 both getKey and containsAlias do so when the Keystore service
+     * cannot be reached. Absence is trusted only once the Keystore has created and found a probe key.
+     */
     private fun masterKeyExists(): Boolean =
         try {
-            KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }.containsAlias(masterKeyAlias)
+            val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+            keyStore.containsAlias(masterKeyAlias) || !keystoreResponds(keyStore)
         } catch (e: Exception) {
             true
         }
+
+    private fun keystoreResponds(keyStore: KeyStore): Boolean {
+        val probeAlias = "${masterKeyAlias}_probe"
+        return try {
+            KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE).apply {
+                init(
+                    KeyGenParameterSpec.Builder(probeAlias, KeyProperties.PURPOSE_ENCRYPT)
+                        .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                        .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                        .build(),
+                )
+            }.generateKey()
+            keyStore.containsAlias(probeAlias)
+        } catch (e: Exception) {
+            false
+        } finally {
+            runCatching { keyStore.deleteEntry(probeAlias) }
+        }
+    }
 
     /**
      * Data goes first: if a deletion fails, the keysets are still there and still unreadable, so the
