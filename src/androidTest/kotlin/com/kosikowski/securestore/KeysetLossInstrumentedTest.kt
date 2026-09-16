@@ -10,10 +10,12 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.io.File
 import java.security.KeyStore
 import java.util.Collections
 import java.util.concurrent.atomic.AtomicInteger
@@ -131,6 +133,40 @@ class KeysetLossInstrumentedTest {
         }
 
     @Test
+    fun reset_withABlobDirectoryThatCannotBeListed_failsAndKeepsTheKeysets() =
+        runBlocking {
+            storeValueAndBlob(KeysetLossPolicy.RESET)
+            val storage = SecureStorageImpl(context, config(KeysetLossPolicy.RESET))
+
+            withUnreadableBlobDirectory {
+                assertThrows(SecureStoreException.StorageException::class.java) { runBlocking { storage.reset() } }
+                assertTrue(prefsKeysetFile.exists())
+            }
+
+            assertTrue(storage.blobExists(BLOB))
+            storage.reset()
+            assertFalse(storage.blobExists(BLOB))
+            assertNull(storage.getString(KEY))
+        }
+
+    @Test
+    fun lostMasterKey_withABlobDirectoryThatCannotBeListed_recoversOnceItCanBeListed() =
+        runBlocking {
+            storeValueAndBlob(KeysetLossPolicy.RESET)
+            keyStore().deleteEntry(masterKeyAlias)
+            val storage = SecureStorageImpl(context, config(KeysetLossPolicy.RESET))
+
+            withUnreadableBlobDirectory {
+                assertThrows(SecureStoreException.InitializationException::class.java) { runBlocking { storage.getString(KEY) } }
+                assertTrue(resets.isEmpty())
+            }
+
+            assertNull(storage.getString(KEY))
+            assertFalse(storage.blobExists(BLOB))
+            assertEquals(1, resets.size)
+        }
+
+    @Test
     fun reset_deletesDataAndKeepsWorking() =
         runBlocking {
             val storage = SecureStorageImpl(context, config(KeysetLossPolicy.RESET))
@@ -166,6 +202,19 @@ class KeysetLossInstrumentedTest {
             .edit()
             .putString("secure_storage_prefs_keyset_pref_$namespace", value)
             .commit()
+    }
+
+    private val prefsKeysetFile get() = File(context.createDeviceProtectedStorageContext().dataDir, "shared_prefs/secure_storage_prefs_key_$namespace.xml")
+
+    private inline fun withUnreadableBlobDirectory(block: () -> Unit) {
+        val blobDirectory = File(context.createDeviceProtectedStorageContext().filesDir, "secure_blobs_$namespace")
+        assertTrue(blobDirectory.setReadable(false, false))
+        try {
+            assertNull("the blob directory must not be listable for this test", blobDirectory.listFiles())
+            block()
+        } finally {
+            blobDirectory.setReadable(true, false)
+        }
     }
 
     private suspend fun storeValueAndBlob(policy: KeysetLossPolicy) {

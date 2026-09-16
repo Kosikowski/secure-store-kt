@@ -307,7 +307,7 @@ class SecureStorageImpl(
         if (legacyKeys.isNotEmpty()) {
             values.edit().apply { legacyKeys.forEach(::remove) }.commitOrThrow()
         }
-        storageDirectory.listFiles()?.filter { isLegacyName(it.name) }?.forEach { file ->
+        storageDirectory.listFilesOrThrow().filter { isLegacyName(it.name) }.forEach { file ->
             if (!file.delete()) throw IOException("Failed to delete $file")
         }
         deleteSharedPreferencesOrThrow(keysetContext, tinkMetadataKeysetName)
@@ -390,7 +390,7 @@ class SecureStorageImpl(
     private fun deleteKeysetsAndData() {
         try {
             deleteSharedPreferencesOrThrow(storageContext, sharedPrefsName)
-            storageDirectory.listFiles()?.forEach { file ->
+            storageDirectory.listFilesOrThrow().forEach { file ->
                 if (!file.delete()) throw IOException("Failed to delete $file")
             }
             deletePartialBlobFiles()
@@ -408,8 +408,12 @@ class SecureStorageImpl(
 
     private fun isUserUnlocked(): Boolean = appContext.getSystemService(UserManager::class.java)?.isUserUnlocked ?: true
 
+    // A blob directory that cannot be listed may hold data, so it counts as holding some.
     private fun hasStoredData(): Boolean =
-        storageContext.sharedPreferencesFile(sharedPrefsName).exists() || !storageDirectory.list().isNullOrEmpty()
+        storageContext.sharedPreferencesFile(sharedPrefsName).exists() || storageDirectory.list()?.isNotEmpty() ?: true
+
+    /** listFiles() also returns null when the directory cannot be read, which must not pass for "no files". */
+    private fun File.listFilesOrThrow(): Array<File> = listFiles() ?: throw IOException("Failed to list $this")
 
     private val storageDirectory: File by lazy {
         File(storageContext.filesDir, secureFileDir).apply {
