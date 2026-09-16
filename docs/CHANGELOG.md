@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Concurrent operations on the same blob could read a partially written file and fail to decrypt it: deleting a blob removed its lock while other callers still waited on it, so the next caller created a second lock for the same file
 - With `encryptKeys` or `encryptFileNames`, stored values and blobs could never be found again: names were encrypted with a randomized AEAD, so every lookup produced a different name. `getString` returned null right after `putString`, `readBlob` right after `saveBlob`, and removals had no effect. Names are now encrypted deterministically with AES-SIV, in a separate keyset
 - `contains` encrypted the key twice with `encryptKeys` and always returned false
 - A store whose Keystore master key was deleted, for example by clearing the data of the app or of another app sharing its user ID, failed on every operation until the app was reinstalled

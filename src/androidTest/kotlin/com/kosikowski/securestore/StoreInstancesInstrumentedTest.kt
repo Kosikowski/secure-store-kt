@@ -109,6 +109,23 @@ class StoreInstancesInstrumentedTest {
         }
 
     @Test
+    fun concurrentSavesReadsAndDeletesOfOneBlob_neverReadAPartialWrite() =
+        runBlocking {
+            val storages = List(BLOB_WORKERS) { SecureStorageImpl(context, config()) }
+            val payload = ByteArray(BLOB_SIZE) { it.toByte() }
+
+            storages.map { storage ->
+                launch(Dispatchers.IO) {
+                    repeat(BLOB_ROUNDS) {
+                        storage.saveBlob(BLOB, payload)
+                        storage.readBlob(BLOB)?.let { assertArrayEquals(payload, it) }
+                        storage.deleteBlob(BLOB)
+                    }
+                }
+            }.joinAll()
+        }
+
+    @Test
     fun sameNamespaceWithAnotherMasterKeyAlias_isRejected() {
         SecureStorageImpl(context, config())
 
@@ -157,6 +174,9 @@ class StoreInstancesInstrumentedTest {
         const val BLOB = "certificate.bin"
         val BLOB_CONTENT = byteArrayOf(1, 2, 3)
         val OTHER_BLOB_CONTENT = byteArrayOf(4, 5, 6)
+        const val BLOB_WORKERS = 6
+        const val BLOB_ROUNDS = 60
+        const val BLOB_SIZE = 256 * 1024
         const val WRITERS = 3
         const val WRITES = 40
         const val RESETS = 15

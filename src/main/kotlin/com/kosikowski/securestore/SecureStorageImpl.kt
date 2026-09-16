@@ -159,7 +159,11 @@ class SecureStorageImpl(
         @Volatile
         var generation = 0L
 
-        val fileLocks = ConcurrentHashMap<String, Any>()
+        /**
+         * A fixed set of locks shared by file name hash. A lock is never removed while a thread may be
+         * waiting on it, which would let the next caller create a second lock for the same file.
+         */
+        val fileLocks = Array(FILE_LOCK_STRIPES) { Any() }
     }
 
     private class Keysets(
@@ -356,7 +360,6 @@ class SecureStorageImpl(
             storageDirectory.listFiles()?.forEach { file ->
                 if (!file.delete()) throw IOException("Failed to delete $file")
             }
-            shared.fileLocks.clear()
 
             listOf(tinkKeysetName, tinkPrefsKeysetName, tinkNamesKeysetName, tinkMetadataKeysetName)
                 .forEach { deleteSharedPreferencesOrThrow(keysetContext, it) }
@@ -382,7 +385,7 @@ class SecureStorageImpl(
         }
     }
 
-    private fun getFileLock(fileName: String): Any = shared.fileLocks.getOrPut(fileName) { Any() }
+    private fun getFileLock(fileName: String): Any = shared.fileLocks[Math.floorMod(fileName.hashCode(), FILE_LOCK_STRIPES)]
 
     // ==================== Computed Properties ====================
 
@@ -574,11 +577,7 @@ class SecureStorageImpl(
             val storageFileName = keysets.storedFileName(fileName)
 
             synchronized(getFileLock(storageFileName)) {
-                val result = getFile(storageFileName).delete()
-                if (result) {
-                    shared.fileLocks.remove(storageFileName)
-                }
-                result
+                getFile(storageFileName).delete()
             }
         }
     }
@@ -605,7 +604,6 @@ class SecureStorageImpl(
                             file.delete()
                         }
                     }
-                    shared.fileLocks.clear()
                 } catch (e: SecureStoreException) {
                     throw e
                 } catch (e: Exception) {
@@ -742,7 +740,6 @@ class SecureStorageImpl(
             DecryptionFailurePolicy.DELETE_AND_RETURN_NULL -> {
                 try {
                     getFile(storageFileName).delete()
-                    shared.fileLocks.remove(storageFileName)
                 } catch (_: Exception) {
                     // Ignore deletion errors
                 }
@@ -754,6 +751,7 @@ class SecureStorageImpl(
 
     private companion object {
         const val ANDROID_KEYSTORE = "AndroidKeyStore"
+        const val FILE_LOCK_STRIPES = 32
         const val LEGACY_NAME_BASE64_FLAGS = android.util.Base64.NO_WRAP or android.util.Base64.URL_SAFE
 
         val sharedStates = ConcurrentHashMap<String, SharedState>()
