@@ -12,7 +12,9 @@ import kotlinx.serialization.KSerializer
  *
  * ## Error Handling
  * Operations may throw [SecureStoreException] subclasses when configured to do so.
- * By default, read operations return null on failure for graceful degradation.
+ * By default, read operations return null when a value cannot be decrypted. A store that cannot be
+ * opened at all throws [SecureStoreException.InitializationException] or, under
+ * [KeysetLossPolicy.THROW], [SecureStoreException.KeysetLostException] from every operation.
  *
  * @see SecureStorageImpl
  * @see SecureStoreConfig
@@ -142,6 +144,14 @@ interface SecureStorage {
      * @throws SecureStoreException.StorageException if clearing fails
      */
     suspend fun clearAll()
+
+    /**
+     * Deletes all stored data together with the keysets that encrypt it, so the next operation starts
+     * with new keysets. Unlike [clearAll], this works when the keysets can no longer be opened.
+     *
+     * @throws SecureStoreException.StorageException if deletion fails
+     */
+    suspend fun reset()
 
     /**
      * Lists all stored keys in SharedPreferences.

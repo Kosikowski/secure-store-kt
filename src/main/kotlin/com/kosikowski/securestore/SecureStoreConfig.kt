@@ -94,6 +94,26 @@ enum class DecryptionFailurePolicy {
 }
 
 /**
+ * Behavior when the keysets can no longer be opened because the Keystore master key was deleted, or a
+ * keyset was corrupted. Android deletes an app's Keystore keys when its data is cleared, and, for apps
+ * sharing a user ID, when the data of any of them is cleared. The stored data cannot be decrypted
+ * again in either case.
+ */
+enum class KeysetLossPolicy {
+    /**
+     * Delete the keysets and all stored data, create new keysets and continue with an empty store.
+     * [SecureStoreConfig.onKeysetReset] is called once with the cause.
+     */
+    RESET,
+
+    /**
+     * Throw [SecureStoreException.KeysetLostException] from every operation until
+     * [SecureStorage.reset] is called.
+     */
+    THROW,
+}
+
+/**
  * Configuration for SecureStore.
  *
  * Example usage:
@@ -121,6 +141,8 @@ enum class DecryptionFailurePolicy {
  * @property ioDispatcher Coroutine dispatcher for IO operations
  * @property secureMemory Whether to wipe sensitive data from memory after use
  * @property enableKeyRotation Enable key rotation support
+ * @property keysetLossPolicy Policy when the keysets can no longer be opened
+ * @property onKeysetReset Called when [KeysetLossPolicy.RESET] discarded the stored data
  */
 class SecureStoreConfig private constructor(
     val encryption: EncryptionAlgorithm,
@@ -135,6 +157,8 @@ class SecureStoreConfig private constructor(
     val ioDispatcher: CoroutineDispatcher,
     val secureMemory: Boolean,
     val enableKeyRotation: Boolean,
+    val keysetLossPolicy: KeysetLossPolicy,
+    val onKeysetReset: (cause: Throwable) -> Unit,
 ) {
 
     /**
@@ -153,6 +177,8 @@ class SecureStoreConfig private constructor(
         private var ioDispatcher: CoroutineDispatcher = Dispatchers.IO
         private var secureMemory: Boolean = false
         private var enableKeyRotation: Boolean = false
+        private var keysetLossPolicy: KeysetLossPolicy = KeysetLossPolicy.RESET
+        private var onKeysetReset: (cause: Throwable) -> Unit = {}
 
         /**
          * Set the encryption algorithm.
@@ -242,6 +268,21 @@ class SecureStoreConfig private constructor(
         fun enableKeyRotation(enabled: Boolean) = apply { this.enableKeyRotation = enabled }
 
         /**
+         * Set policy for keysets that can no longer be opened.
+         * Default: RESET
+         */
+        fun keysetLossPolicy(policy: KeysetLossPolicy) = apply { this.keysetLossPolicy = policy }
+
+        /**
+         * Called once, with the cause, after [KeysetLossPolicy.RESET] discarded the stored data. Use it
+         * to report the reset and to restore what the app needs, such as signing in again. It runs on
+         * the thread of the operation that opened the store, and an exception it throws fails that
+         * operation.
+         * Default: no-op
+         */
+        fun onKeysetReset(listener: (cause: Throwable) -> Unit) = apply { this.onKeysetReset = listener }
+
+        /**
          * Build the configuration.
          */
         fun build(): SecureStoreConfig = SecureStoreConfig(
@@ -257,6 +298,8 @@ class SecureStoreConfig private constructor(
             ioDispatcher = ioDispatcher,
             secureMemory = secureMemory,
             enableKeyRotation = enableKeyRotation,
+            keysetLossPolicy = keysetLossPolicy,
+            onKeysetReset = onKeysetReset,
         )
     }
 
@@ -276,6 +319,8 @@ class SecureStoreConfig private constructor(
         .ioDispatcher(ioDispatcher)
         .secureMemory(secureMemory)
         .enableKeyRotation(enableKeyRotation)
+        .keysetLossPolicy(keysetLossPolicy)
+        .onKeysetReset(onKeysetReset)
 
     companion object {
         /**

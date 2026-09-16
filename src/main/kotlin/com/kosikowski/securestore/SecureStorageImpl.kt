@@ -162,14 +162,40 @@ class SecureStorageImpl(
      * The file, preferences and (when enabled) metadata keysets, opened together: they are protected
      * by the same master key and are lost together. Separate keysets for defense in depth.
      */
-    private fun keysets(): Keysets =
-        openKeysets ?: synchronized(keysetLock) {
-            openKeysets ?: openKeysetsOrThrow().also { openKeysets = it }
-        }
+    private fun keysets(): Keysets {
+        openKeysets?.let { return it }
 
-    private fun openKeysetsOrThrow(): Keysets {
+        var discarded: Throwable? = null
+        val keysets =
+            synchronized(keysetLock) {
+                openKeysets ?: openKeysetsRecoveringLoss { discarded = it }.also { openKeysets = it }
+            }
+        discarded?.let(config.onKeysetReset)
+        return keysets
+    }
+
+    private fun openKeysetsRecoveringLoss(onDiscarded: (Throwable) -> Unit): Keysets {
         moveLegacyKeysets()
-        return try {
+        try {
+            return openKeysetsOrThrow()
+        } catch (e: SecureStoreException.InitializationException) {
+            val failure = e.cause ?: e
+            if (!failure.isLostKeyset(::masterKeyExists)) throw e
+            if (config.keysetLossPolicy == KeysetLossPolicy.THROW) {
+                throw SecureStoreException.KeysetLostException("Keysets can no longer be opened; stored data is unrecoverable", failure)
+            }
+            try {
+                deleteKeysetsAndData()
+            } catch (deletion: Exception) {
+                throw SecureStoreException.InitializationException("Failed to discard keysets that can no longer be opened", deletion)
+            }
+            onDiscarded(failure)
+        }
+        return openKeysetsOrThrow()
+    }
+
+    private fun openKeysetsOrThrow(): Keysets =
+        try {
             val metadata = if (usesMetadataKeyset) keysetAead(tinkMetadataKeysetPref, tinkMetadataKeysetName) else null
             Keysets(
                 fileAead = keysetAead(tinkKeysetPref, tinkKeysetName),
@@ -186,7 +212,6 @@ class SecureStorageImpl(
         } catch (e: Exception) {
             throw SecureStoreException.InitializationException("Failed to open keysets", e)
         }
-    }
 
     private fun keysetAead(keysetName: String, prefFileName: String): Aead =
         AndroidKeysetManager.Builder()
@@ -224,6 +249,30 @@ class SecureStorageImpl(
 
     private fun Context.sharedPreferencesFile(name: String): File = File(dataDir, "shared_prefs/$name.xml")
 
+    private fun masterKeyExists(): Boolean =
+        try {
+            KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }.containsAlias(masterKeyAlias)
+        } catch (e: Exception) {
+            true
+        }
+
+    private fun deleteKeysetsAndData() {
+        val keysetFiles = listOf(tinkKeysetName, tinkPrefsKeysetName, tinkMetadataKeysetName)
+        keysetFiles.forEach { deleteSharedPreferencesOrThrow(keysetContext, it) }
+        if (config.storageMode == StorageMode.DEVICE_PROTECTED && isUserUnlocked()) {
+            keysetFiles.forEach { deleteSharedPreferencesOrThrow(appContext, it) }
+        }
+        deleteSharedPreferencesOrThrow(storageContext, sharedPrefsName)
+        storageDirectory.listFiles()?.forEach { file ->
+            if (!file.delete()) throw IOException("Failed to delete $file")
+        }
+        fileLocks.clear()
+    }
+
+    private fun deleteSharedPreferencesOrThrow(context: Context, name: String) {
+        if (!context.deleteSharedPreferences(name)) throw IOException("Failed to delete shared preferences $name")
+    }
+
     private fun isUserUnlocked(): Boolean = appContext.getSystemService(UserManager::class.java)?.isUserUnlocked ?: true
 
     private fun hasStoredData(): Boolean =
@@ -244,8 +293,11 @@ class SecureStorageImpl(
 
     // ==================== Computed Properties ====================
 
+    private val masterKeyAlias: String
+        get() = "${config.masterKeyAlias}_${config.namespace}"
+
     private val masterKeyUri: String
-        get() = "android-keystore://${config.masterKeyAlias}_${config.namespace}"
+        get() = "android-keystore://$masterKeyAlias"
 
     private val sharedPrefsName: String
         get() = "secure_storage_prefs_${config.namespace}"
@@ -306,6 +358,8 @@ class SecureStorageImpl(
                 .edit()
                 .remove(key)
                 .commitOrThrow()
+        } catch (e: SecureStoreException) {
+            throw e
         } catch (e: Exception) {
             throw SecureStoreException.StorageException("Failed to remove string for key: $key", e)
         }
@@ -448,8 +502,21 @@ class SecureStorageImpl(
                     }
                 }
                 fileLocks.clear()
+            } catch (e: SecureStoreException) {
+                throw e
             } catch (e: Exception) {
                 throw SecureStoreException.StorageException("Failed to clear all data", e)
+            }
+        }
+    }
+
+    override suspend fun reset(): Unit = withContext(config.ioDispatcher) {
+        synchronized(keysetLock) {
+            openKeysets = null
+            try {
+                deleteKeysetsAndData()
+            } catch (e: Exception) {
+                throw SecureStoreException.StorageException("Failed to reset secure storage", e)
             }
         }
     }
@@ -550,6 +617,7 @@ class SecureStorageImpl(
     }
 
     private fun <T> handleDecryptionFailure(key: String, e: Exception): T? {
+        rethrowIfStoreUnavailable(e)
         return when (config.decryptionFailurePolicy) {
             DecryptionFailurePolicy.THROW_EXCEPTION ->
                 throw SecureStoreException.DecryptionException("Failed to decrypt value for key: $key", e)
@@ -567,6 +635,7 @@ class SecureStorageImpl(
     }
 
     private fun handleBlobDecryptionFailure(originalFileName: String, storageFileName: String, e: Exception): ByteArray? {
+        rethrowIfStoreUnavailable(e)
         return when (config.decryptionFailurePolicy) {
             DecryptionFailurePolicy.THROW_EXCEPTION ->
                 throw SecureStoreException.DecryptionException("Failed to decrypt blob: $originalFileName", e)
@@ -581,6 +650,14 @@ class SecureStorageImpl(
             }
             DecryptionFailurePolicy.RETURN_NULL -> null
         }
+    }
+
+    private fun rethrowIfStoreUnavailable(e: Exception) {
+        if (e is SecureStoreException.InitializationException || e is SecureStoreException.KeysetLostException) throw e
+    }
+
+    private companion object {
+        const val ANDROID_KEYSTORE = "AndroidKeyStore"
     }
 
     /**
