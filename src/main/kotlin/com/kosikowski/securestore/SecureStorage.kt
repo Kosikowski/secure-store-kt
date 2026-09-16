@@ -12,7 +12,9 @@ import kotlinx.serialization.KSerializer
  *
  * ## Error Handling
  * Operations may throw [SecureStoreException] subclasses when configured to do so.
- * By default, read operations return null on failure for graceful degradation.
+ * By default, read operations return null when a value cannot be decrypted. A store that cannot be
+ * opened at all throws [SecureStoreException.InitializationException] or, under
+ * [KeysetLossPolicy.THROW], [SecureStoreException.KeysetLostException] from every operation except [getStoreInfo].
  *
  * @see SecureStorageImpl
  * @see SecureStoreConfig
@@ -144,6 +146,24 @@ interface SecureStorage {
     suspend fun clearAll()
 
     /**
+     * Deletes all stored data together with the keysets that encrypt it, so the next operation starts
+     * with new keysets. Unlike [clearAll], this works when the keysets can no longer be opened.
+     *
+     * @throws SecureStoreException.StorageException if deletion fails
+     */
+    suspend fun reset()
+
+    /**
+     * Adds a new key, created with the configured [SecureStoreConfig.encryption], to the keysets that
+     * encrypt values and blobs, and uses it for everything written from then on. Earlier keys stay in the
+     * keysets, so existing data remains readable; a value or blob is encrypted with the new key the next
+     * time it is written. Names keep their key, because an encrypted name must not change to be found.
+     *
+     * @throws SecureStoreException.KeystoreException if a keyset cannot be updated
+     */
+    suspend fun rotateKeys()
+
+    /**
      * Lists all stored keys in SharedPreferences.
      *
      * Note: If key encryption is enabled, returned keys are decrypted.
@@ -177,7 +197,8 @@ interface SecureStorage {
  * Metadata about a SecureStore instance.
  *
  * @property encryptionAlgorithm The encryption algorithm in use
- * @property isHardwareBacked Whether keys are backed by hardware (TEE/StrongBox)
+ * @property isHardwareBacked Whether the master key is kept in secure hardware (TEE or StrongBox). False until
+ *   the store has created its master key, which happens on its first operation
  * @property namespace The namespace this store operates in
  * @property keyEncryptionEnabled Whether SharedPreferences keys are encrypted
  * @property fileNameEncryptionEnabled Whether blob file names are encrypted

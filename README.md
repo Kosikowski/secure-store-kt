@@ -101,6 +101,8 @@ val performanceStorage = SecureStorageImpl(context, SecureStoreConfig.PERFORMANC
 | `decryptionFailurePolicy` | What to do on decryption failure | RETURN_NULL |
 | `namespace` | Isolate multiple storage instances | "default" |
 | `secureMemory` | Wipe sensitive data from memory after use | false |
+| `keysetLossPolicy` | What to do when the keysets can no longer be opened (RESET, THROW) | RESET |
+| `onKeysetReset` | Called after RESET discarded the stored data | no-op |
 
 ### Storing Objects
 
@@ -168,6 +170,46 @@ println("Filenames encrypted: ${info.fileNameEncryptionEnabled}")
 secureStorage.clearAll()
 ```
 
+### Lost Keys
+
+Android deletes an app's Keystore keys when its data is cleared, and, for apps that share an
+`android:sharedUserId`, when the data of **any** of those apps is cleared. A keyset can also be
+corrupted. Either way the stored data can never be decrypted again.
+
+By default (`KeysetLossPolicy.RESET`) the store deletes the unreadable keysets and data, creates new
+keysets and carries on empty. `onKeysetReset` tells you it happened, so you can report it and restore
+what the app needs:
+
+```kotlin
+val config = SecureStoreConfig.Builder()
+    .onKeysetReset { cause ->
+        crashReporter.recordNonFatal(cause)
+        sessionManager.requireSignIn()
+    }
+    .build()
+```
+
+With `KeysetLossPolicy.THROW` every operation except `getStoreInfo()` throws `KeysetLostException` until you call `reset()`:
+
+```kotlin
+try {
+    secureStorage.getString("token")
+} catch (e: SecureStoreException.KeysetLostException) {
+    secureStorage.reset()
+}
+```
+
+### Key Rotation
+
+```kotlin
+secureStorage.rotateKeys()
+```
+
+Adds a new key to the keysets that encrypt values and blobs and uses it for all later writes. Existing
+data stays readable with the earlier keys, which remain in the keysets; a value or blob moves to the new
+key the next time it is written. The new key uses the configured `encryption`, so rotating also switches a
+store to a newly configured algorithm. Name encryption keeps its key.
+
 ## Configuration Presets
 
 ### `SecureStoreConfig.DEFAULT`
@@ -179,6 +221,7 @@ Standard configuration for most use cases:
 
 ### `SecureStoreConfig.HIGH_SECURITY`
 Maximum security for sensitive applications:
+- Its own namespace, `high_security`
 - AES-256-GCM encryption
 - Hardware-required key protection
 - Encrypted keys and filenames
@@ -190,6 +233,14 @@ Optimized for performance:
 - ChaCha20-Poly1305 (faster on devices without AES-NI)
 - Software key protection
 - No metadata encryption
+- No associated data
+
+`PERFORMANCE` uses the `default` namespace, like `DEFAULT`, and stores values without associated data,
+so neither can read what the other wrote. To use both, give one its own namespace:
+
+```kotlin
+val cache = SecureStorageImpl(context, SecureStoreConfig.PERFORMANCE.toBuilder().namespace("cache").build())
+```
 
 ## Error Handling
 
@@ -214,6 +265,7 @@ try {
 | Exception | Description |
 |-----------|-------------|
 | `InitializationException` | Tink or Keystore initialization failed |
+| `KeysetLostException` | The keysets can no longer be opened (only with `KeysetLossPolicy.THROW`) |
 | `EncryptionException` | Encryption operation failed |
 | `DecryptionException` | Decryption operation failed |
 | `KeystoreException` | Android Keystore operation failed |
@@ -240,6 +292,11 @@ val cacheStorage = SecureStorageImpl(context, SecureStoreConfig.Builder()
 userStorage.putString("key", "value1")
 cacheStorage.getString("key") // Returns null
 ```
+
+Stores that share a namespace and storage mode share their data and keysets, so they must use the same
+`masterKeyAlias`; creating one with a different alias throws `IllegalArgumentException`. Settings that
+change how data is stored (`encryptKeys`, `encryptFileNames`, `useAssociatedData`) should also match,
+or each store only reads what it wrote itself.
 
 ### Dependency Injection
 
@@ -305,13 +362,14 @@ val secureStorage = SecureStorageImpl(context, config)
 4. **Storage**:
    - Key-Value pairs → Encrypted SharedPreferences
    - Blobs → Encrypted files in app's private directory
+   - Keysets → SharedPreferences next to the data, so `DEVICE_PROTECTED` keeps them in device-protected storage
 
 ### Security Model
 
 ```
 ┌─────────────────────────────────────┐
 │        Android Keystore             │
-│    (Hardware-backed, StrongBox)     │
+│   (secure hardware when available)  │
 └────────────────┬────────────────────┘
                  │ Protects
                  ▼
@@ -340,7 +398,9 @@ val secureStorage = SecureStorageImpl(context, config)
 All operations are thread-safe:
 - **File operations**: Protected by per-file locks
 - **Preferences**: Thread-safe by design
-- **clearAll()**: Uses instance-level lock
+- **clearAll()**: Uses a lock shared by the instances of the store
+- **reset()**: Waits for running operations on the store to finish, and later operations wait for the reset
+- **Several instances**: Instances with the same storage mode and namespace share their state within the process, so a reset through one applies to all of them
 - **Concurrent access**: Multiple threads can safely access different keys/files
 
 ## API Reference
@@ -368,6 +428,8 @@ interface SecureStorage {
     
     // Bulk operations
     suspend fun clearAll()
+    suspend fun reset()
+    suspend fun rotateKeys()
     suspend fun getAllKeys(): Set<String>
     suspend fun getAllBlobNames(): Set<String>
     
@@ -413,18 +475,23 @@ interface SecureStorage {
 
 ### Issue: `SecureStoreException.InitializationException`
 
-**Cause**: Tink initialization failed  
-**Solution**: Ensure app has proper permissions and Android Keystore is available
+**Cause**: Tink initialization failed, or, for a `DEVICE_PROTECTED` store that already holds data, the device has not been unlocked since upgrading from 1.0.0 (its keysets are copied to device-protected storage on first unlock)  
+**Solution**: Ensure Android Keystore is available; for the upgrade case, retry after the first unlock
 
 ### Issue: `SecureStoreException.HardwareRequiredException`
 
-**Cause**: Hardware-backed keys required but device doesn't support them  
-**Solution**: Use `KeyProtection.HARDWARE_PREFERRED` or `KeyProtection.SOFTWARE`
+**Cause**: `KeyProtection.HARDWARE_REQUIRED` is set (as in `HIGH_SECURITY`) but the device keeps the master key in software, for example on an emulator  
+**Solution**: Use `KeyProtection.SOFTWARE` where software keys are acceptable
 
 ### Issue: Data lost after app reinstall
 
 **Cause**: Android Keystore keys are deleted on app uninstall  
 **Solution**: This is intentional for security. Use server-side storage for persistence
+
+### Issue: Stored data disappeared without a reinstall
+
+**Cause**: The keysets could no longer be opened, for example because the app's data, or the data of an app sharing its user ID, was cleared. `KeysetLossPolicy.RESET` discarded the data  
+**Solution**: Listen with `onKeysetReset` to detect it and restore what the app needs; see [Lost Keys](#lost-keys)
 
 ### Issue: Performance degradation
 

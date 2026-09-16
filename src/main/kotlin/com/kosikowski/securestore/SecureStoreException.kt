@@ -21,6 +21,16 @@ sealed class SecureStoreException(
     ) : SecureStoreException(message, cause)
 
     /**
+     * Thrown under [KeysetLossPolicy.THROW] when the keysets can no longer be opened: the Keystore
+     * master key was deleted or a keyset is corrupted. The stored data cannot be recovered; call
+     * [SecureStorage.reset] to start over.
+     */
+    class KeysetLostException(
+        message: String,
+        cause: Throwable? = null,
+    ) : SecureStoreException(message, cause)
+
+    /**
      * Thrown when encryption fails.
      * This may indicate key issues or memory problems.
      */

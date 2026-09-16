@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `KeysetLossPolicy` and `SecureStoreConfig.Builder.keysetLossPolicy()`: what to do when the keysets can no longer be opened because the Keystore master key was deleted or a keyset is corrupted. `RESET` (default) discards the unreadable data and continues with new keysets; `THROW` throws the new `SecureStoreException.KeysetLostException` until `reset()` is called
+- `SecureStoreConfig.Builder.onKeysetReset()`: called once, with the cause, after `RESET` discarded the stored data
+- `SecureStorage.reset()`: deletes all stored data together with its keysets; works when the keysets can no longer be opened
+- `SecureStorage.rotateKeys()`: adds a new primary key, created with the configured algorithm, to the keysets that encrypt values and blobs; earlier keys stay so existing data remains readable
+
+### Changed
+
+- `SecureStoreConfig.HIGH_SECURITY` uses its own namespace, `high_security`, instead of sharing `default` with `DEFAULT` and `PERFORMANCE`. Nothing it stored in 1.0.0 could be read (see the name encryption fix below)
+- Creating a store whose storage mode and namespace are already used in the process with a different `masterKeyAlias` throws `IllegalArgumentException`. With `KeysetLossPolicy.RESET` each store would treat the other's keysets as lost and delete its data
+- Entries and blobs stored under names encrypted by 1.0.0 are deleted on the first open. They could never be read, and removing them never worked, so recovering them could bring back values the app had removed
+- `DEVICE_PROTECTED` stores keep their keysets in device-protected storage. Keysets written by 1.0.0 are copied on the first open after the user has unlocked, leaving the originals for a `CREDENTIAL_PROTECTED` store with the same namespace; until then a store that already holds data throws `InitializationException`
+- Every operation except `getStoreInfo` throws `InitializationException` or `KeysetLostException` when the store cannot be opened. Reads no longer apply `decryptionFailurePolicy` to it (which returned null by default), `removeString` and `clearAll` no longer wrap it in `StorageException`, and `blobExists`, `deleteBlob` and `getAllBlobNames` now open the store as well
+- Instances with the same storage mode and namespace share their state within a process: a reset through one of them applies to all, and operations and resets on the store wait for each other
+- `SecureStorage` has new abstract methods, `reset()` and `rotateKeys()`; custom implementations must implement them
+
+### Deprecated
+
+- `SecureStoreConfig.enableKeyRotation` and `SecureStoreConfig.Builder.enableKeyRotation()` never had any effect. Keysets always keep earlier keys; use `SecureStorage.rotateKeys()` to rotate
+
+### Fixed
+
+- `saveBlob` overwrote the blob file in place, so a crash during the write left a truncated blob that could no longer be decrypted. The new content is now written and synced to a separate file and renamed over the blob
+- Recovery from a lost master key no longer treats a Keystore that cannot be reached as a deleted key. Up to Android 11 Keystore lookups report a key as absent when the Keystore service cannot be reached, which `KeysetLossPolicy.RESET` would have answered by deleting the data; a missing key now counts only after the Keystore has created and found a probe key
+- `KeyProtection.HARDWARE_REQUIRED` was never enforced and `getStoreInfo().isHardwareBacked` was always true on Android 6+. Both now check where Android Keystore keeps the master key: operations throw `HardwareRequiredException` when it is not in secure hardware, and `isHardwareBacked` is false until the master key exists. The constructor no longer throws `HardwareRequiredException`, because the key is created on the first operation
+- Concurrent operations on the same blob could read a partially written file and fail to decrypt it: deleting a blob removed its lock while other callers still waited on it, so the next caller created a second lock for the same file
+- With `encryptKeys` or `encryptFileNames`, stored values and blobs could never be found again: names were encrypted with a randomized AEAD, so every lookup produced a different name. `getString` returned null right after `putString`, `readBlob` right after `saveBlob`, and removals had no effect. Names are now encrypted deterministically with AES-SIV, in a separate keyset
+- `contains` encrypted the key twice with `encryptKeys` and always returned false
+- A store whose Keystore master key was deleted, for example by clearing the data of the app or of another app sharing its user ID, failed on every operation until the app was reinstalled
+- `DEVICE_PROTECTED` stores kept their keysets in credential-encrypted storage, because Tink reads keysets through `Context.getApplicationContext()`, so they could not be opened before the first unlock
+
 
 ## [1.0.0] - 2025-11-28
 

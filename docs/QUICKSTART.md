@@ -113,6 +113,8 @@ dependencies {
 | `namespace` | String | "default" | Namespace for isolation |
 | `secureMemory` | true/false | false | Wipe sensitive data from memory |
 | `decryptionFailurePolicy` | RETURN_NULL, THROW_EXCEPTION, DELETE_AND_RETURN_NULL | RETURN_NULL | Decryption failure behavior |
+| `keysetLossPolicy` | RESET, THROW | RESET | Behavior when the keysets can no longer be opened |
+| `onKeysetReset` | (Throwable) -> Unit | no-op | Called after RESET discarded the stored data |
 
 ## API Quick Reference
 
@@ -137,6 +139,8 @@ interface SecureStorage {
     
     // Bulk
     suspend fun clearAll()
+    suspend fun reset()
+    suspend fun rotateKeys()
     suspend fun getAllKeys(): Set<String>
     suspend fun getAllBlobNames(): Set<String>
     

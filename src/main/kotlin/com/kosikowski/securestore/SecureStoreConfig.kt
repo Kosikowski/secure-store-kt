@@ -38,20 +38,20 @@ enum class EncryptionAlgorithm(internal val keyTemplate: KeyTemplate) {
  */
 enum class KeyProtection {
     /**
-     * Use software-backed keys (default).
-     * Works on all devices.
+     * No requirement (default). Works on all devices. Android Keystore still keeps the key in secure
+     * hardware when the device has it.
      */
     SOFTWARE,
 
     /**
-     * Prefer hardware-backed keys (TEE) when available.
-     * Falls back to software if hardware unavailable.
+     * No requirement, same as [SOFTWARE]: Android Keystore keeps the key in secure hardware (TEE) when
+     * the device has it and in software otherwise.
      */
     HARDWARE_PREFERRED,
 
     /**
-     * Require hardware-backed keys (StrongBox or TEE).
-     * Throws exception if hardware backing is unavailable.
+     * Require the master key to be kept in secure hardware (TEE or StrongBox). Operations throw
+     * [SecureStoreException.HardwareRequiredException] when it is not.
      */
     HARDWARE_REQUIRED,
 }
@@ -94,6 +94,26 @@ enum class DecryptionFailurePolicy {
 }
 
 /**
+ * Behavior when the keysets can no longer be opened because the Keystore master key was deleted, or a
+ * keyset was corrupted. Android deletes an app's Keystore keys when its data is cleared, and, for apps
+ * sharing a user ID, when the data of any of them is cleared. The stored data cannot be decrypted
+ * again in either case.
+ */
+enum class KeysetLossPolicy {
+    /**
+     * Delete the keysets and all stored data, create new keysets and continue with an empty store.
+     * [SecureStoreConfig.onKeysetReset] is called once with the cause.
+     */
+    RESET,
+
+    /**
+     * Throw [SecureStoreException.KeysetLostException] from every operation except [SecureStorage.getStoreInfo] until
+     * [SecureStorage.reset] is called.
+     */
+    THROW,
+}
+
+/**
  * Configuration for SecureStore.
  *
  * Example usage:
@@ -120,7 +140,9 @@ enum class DecryptionFailurePolicy {
  * @property masterKeyAlias Master key alias in Android Keystore
  * @property ioDispatcher Coroutine dispatcher for IO operations
  * @property secureMemory Whether to wipe sensitive data from memory after use
- * @property enableKeyRotation Enable key rotation support
+ * @property enableKeyRotation Has no effect; see [SecureStorage.rotateKeys]
+ * @property keysetLossPolicy Policy when the keysets can no longer be opened
+ * @property onKeysetReset Called when [KeysetLossPolicy.RESET] discarded the stored data
  */
 class SecureStoreConfig private constructor(
     val encryption: EncryptionAlgorithm,
@@ -134,7 +156,10 @@ class SecureStoreConfig private constructor(
     val masterKeyAlias: String,
     val ioDispatcher: CoroutineDispatcher,
     val secureMemory: Boolean,
+    @Deprecated(KEY_ROTATION_DEPRECATION, ReplaceWith("false"))
     val enableKeyRotation: Boolean,
+    val keysetLossPolicy: KeysetLossPolicy,
+    val onKeysetReset: (cause: Throwable) -> Unit,
 ) {
 
     /**
@@ -153,6 +178,8 @@ class SecureStoreConfig private constructor(
         private var ioDispatcher: CoroutineDispatcher = Dispatchers.IO
         private var secureMemory: Boolean = false
         private var enableKeyRotation: Boolean = false
+        private var keysetLossPolicy: KeysetLossPolicy = KeysetLossPolicy.RESET
+        private var onKeysetReset: (cause: Throwable) -> Unit = {}
 
         /**
          * Set the encryption algorithm.
@@ -235,15 +262,32 @@ class SecureStoreConfig private constructor(
         fun secureMemory(enabled: Boolean) = apply { this.secureMemory = enabled }
 
         /**
-         * Enable key rotation support.
-         * When enabled, old keys are kept for decryption while new data uses the latest key.
-         * Default: false
+         * Has no effect. Keysets always keep earlier keys, and keys are rotated by calling
+         * [SecureStorage.rotateKeys].
          */
+        @Deprecated(KEY_ROTATION_DEPRECATION)
         fun enableKeyRotation(enabled: Boolean) = apply { this.enableKeyRotation = enabled }
+
+        /**
+         * Set policy for keysets that can no longer be opened.
+         * Default: RESET
+         */
+        fun keysetLossPolicy(policy: KeysetLossPolicy) = apply { this.keysetLossPolicy = policy }
+
+        /**
+         * Called once, with the cause, after [KeysetLossPolicy.RESET] discarded the stored data. Use it
+         * to report the reset and to restore what the app needs, such as signing in again. The instance
+         * that discarded the data calls it on the thread of the operation that triggered the reset,
+         * outside the store's locks. If it throws, that operation fails with the exception, whatever the
+         * [DecryptionFailurePolicy], and the listener is called again on the instance's next operation.
+         * Default: no-op
+         */
+        fun onKeysetReset(listener: (cause: Throwable) -> Unit) = apply { this.onKeysetReset = listener }
 
         /**
          * Build the configuration.
          */
+        @Suppress("DEPRECATION")
         fun build(): SecureStoreConfig = SecureStoreConfig(
             encryption = encryption,
             keyProtection = keyProtection,
@@ -257,12 +301,15 @@ class SecureStoreConfig private constructor(
             ioDispatcher = ioDispatcher,
             secureMemory = secureMemory,
             enableKeyRotation = enableKeyRotation,
+            keysetLossPolicy = keysetLossPolicy,
+            onKeysetReset = onKeysetReset,
         )
     }
 
     /**
      * Create a new builder pre-populated with this config's values.
      */
+    @Suppress("DEPRECATION")
     fun toBuilder(): Builder = Builder()
         .encryption(encryption)
         .keyProtection(keyProtection)
@@ -276,8 +323,13 @@ class SecureStoreConfig private constructor(
         .ioDispatcher(ioDispatcher)
         .secureMemory(secureMemory)
         .enableKeyRotation(enableKeyRotation)
+        .keysetLossPolicy(keysetLossPolicy)
+        .onKeysetReset(onKeysetReset)
 
     companion object {
+        private const val KEY_ROTATION_DEPRECATION =
+            "Has no effect: keysets always keep earlier keys, and keys are rotated with SecureStorage.rotateKeys()."
+
         /**
          * Default configuration.
          * - AES-256-GCM encryption
@@ -289,6 +341,7 @@ class SecureStoreConfig private constructor(
 
         /**
          * High-security configuration with hardware-backed keys and encrypted metadata.
+         * - Namespace "high_security", so it does not share data with [DEFAULT]
          * - AES-256-GCM encryption
          * - Hardware-required key protection
          * - Encrypted keys and file names
@@ -296,6 +349,7 @@ class SecureStoreConfig private constructor(
          * - Corrupted entries are deleted
          */
         val HIGH_SECURITY: SecureStoreConfig = Builder()
+            .namespace("high_security")
             .encryption(EncryptionAlgorithm.AES_256_GCM)
             .keyProtection(KeyProtection.HARDWARE_REQUIRED)
             .encryptKeys(true)
@@ -307,6 +361,8 @@ class SecureStoreConfig private constructor(
 
         /**
          * Performance-optimized configuration.
+         * - Namespace "default", like [DEFAULT]. The two store values differently (see
+         *   [useAssociatedData]), so to use both, give one of them its own namespace with [toBuilder]
          * - ChaCha20-Poly1305 (faster on devices without AES-NI)
          * - Software key protection
          * - No metadata encryption
