@@ -447,7 +447,7 @@ interface SecureStorage {
 
 ### Issue: `SecureStoreException.InitializationException`
 
-**Cause**: Tink initialization failed, or, for a `DEVICE_PROTECTED` store that already holds data, the device has not been unlocked since upgrading from 1.0.0 (its keysets are moved to device-protected storage on first unlock)  
+**Cause**: Tink initialization failed, or, for a `DEVICE_PROTECTED` store that already holds data, the device has not been unlocked since upgrading from 1.0.0 (its keysets are copied to device-protected storage on first unlock)  
 **Solution**: Ensure Android Keystore is available; for the upgrade case, retry after the first unlock
 
 ### Issue: `SecureStoreException.HardwareRequiredException`

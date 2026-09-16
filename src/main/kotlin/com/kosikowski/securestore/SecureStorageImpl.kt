@@ -175,7 +175,7 @@ class SecureStorageImpl(
     }
 
     private fun openKeysetsRecoveringLoss(onDiscarded: (Throwable) -> Unit): Keysets {
-        moveLegacyKeysets()
+        copyLegacyKeysets()
         try {
             return openKeysetsOrThrow()
         } catch (e: SecureStoreException.InitializationException) {
@@ -224,27 +224,38 @@ class SecureStorageImpl(
 
     /**
      * Up to 1.0.0 a DEVICE_PROTECTED store kept its keysets in credential-encrypted storage (see
-     * [KeysetStorageContext]). Moves them next to the data, once. That location cannot be read before
-     * the first unlock, and creating new keysets instead would make the existing data unreadable, so a
-     * store that already holds data refuses to open until then.
+     * [KeysetStorageContext]), in the files a CREDENTIAL_PROTECTED store with the same namespace uses.
+     * They are copied, not moved, so that store keeps its keysets. Only a store that holds data needs
+     * them; without data it starts with new keysets, which also keeps a reset from bringing the old
+     * ones back. The old location cannot be read before the first unlock, so a store that holds data
+     * refuses to open until then rather than create keysets that cannot decrypt it.
      */
-    private fun moveLegacyKeysets() {
+    private fun copyLegacyKeysets() {
         if (config.storageMode != StorageMode.DEVICE_PROTECTED) return
 
         val missing = usedKeysetFileNames.filterNot { storageContext.sharedPreferencesFile(it).exists() }
-        if (missing.isEmpty()) return
+        if (missing.isEmpty() || !hasStoredData()) return
 
         if (!isUserUnlocked()) {
-            if (!hasStoredData()) return
             throw SecureStoreException.InitializationException(
                 "Secure storage is unavailable until the device is unlocked for the first time after upgrading",
             )
         }
-        for (name in missing) {
-            if (!storageContext.moveSharedPreferencesFrom(appContext, name)) {
-                throw SecureStoreException.InitializationException("Failed to move keyset $name to device-protected storage")
-            }
+        try {
+            missing.forEach(::copyLegacyKeyset)
+        } catch (e: IOException) {
+            throw SecureStoreException.InitializationException("Failed to copy keysets to device-protected storage", e)
         }
+    }
+
+    private fun copyLegacyKeyset(name: String) {
+        val legacyFile = appContext.sharedPreferencesFile(name)
+        // SharedPreferences restores from the backup when both exist: the write to the file was interrupted.
+        val source = listOf(File("${legacyFile.path}.bak"), legacyFile).firstOrNull { it.exists() } ?: return
+        val target = storageContext.sharedPreferencesFile(name)
+        val partial = File("${target.path}.copying")
+        source.copyTo(partial, overwrite = true)
+        if (!partial.renameTo(target)) throw IOException("Failed to rename $partial to $target")
     }
 
     private fun Context.sharedPreferencesFile(name: String): File = File(dataDir, "shared_prefs/$name.xml")
@@ -267,11 +278,7 @@ class SecureStorageImpl(
         }
         fileLocks.clear()
 
-        val keysetFiles = listOf(tinkKeysetName, tinkPrefsKeysetName, tinkMetadataKeysetName)
-        keysetFiles.forEach { deleteSharedPreferencesOrThrow(keysetContext, it) }
-        if (config.storageMode == StorageMode.DEVICE_PROTECTED && isUserUnlocked()) {
-            keysetFiles.forEach { deleteSharedPreferencesOrThrow(appContext, it) }
-        }
+        listOf(tinkKeysetName, tinkPrefsKeysetName, tinkMetadataKeysetName).forEach { deleteSharedPreferencesOrThrow(keysetContext, it) }
     }
 
     private fun deleteSharedPreferencesOrThrow(context: Context, name: String) {
