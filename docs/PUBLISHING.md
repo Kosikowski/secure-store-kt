@@ -88,7 +88,11 @@ When you create a GitHub Release, the CI workflow automatically:
 
 #### Steps:
 
-1. **Update version** in `build.gradle.kts`:
+The published version comes from `version` in `build.gradle.kts`, not from the release tag, so bump it
+before creating the release. Maven Central rejects a version that already exists.
+
+1. **Update version** in `build.gradle.kts`, the `## [Unreleased]` section of `docs/CHANGELOG.md`, and the
+   dependency snippets in `README.md` and `docs/*.md`:
    ```kotlin
    version = "1.0.0"
    ```

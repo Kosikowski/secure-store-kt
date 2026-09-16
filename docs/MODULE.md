@@ -6,15 +6,17 @@ SecureStore is a production-ready Android library that provides secure storage u
 
 This library offers a simple and secure way to store sensitive data on Android devices. It leverages:
 
-- **Android Keystore** for hardware-backed key protection
+- **Android Keystore** for the master key, kept in secure hardware when the device has it
 - **Google Tink** for cryptographic operations
-- **AES-256-GCM** for authenticated encryption
+- **Authenticated encryption** with a configurable algorithm (AES-256-GCM by default)
 - **Kotlin Coroutines** for async operations
 
 ## Key Features
 
 - 🔒 Hardware-backed encryption when available
-- 🛡️ AES-256-GCM authenticated encryption
+- 🛡️ Authenticated encryption (AES-256-GCM by default)
+- ♻️ Recovery when Android deletes the Keystore key, e.g. after the app's data is cleared
+- 🔁 Key rotation with existing data kept readable
 - 🧵 Thread-safe concurrent access
 - 📦 Support for strings, objects (via kotlinx.serialization), and binary data
 - ⚡ Async operations with Kotlin coroutines
@@ -25,8 +27,8 @@ This library offers a simple and secure way to store sensitive data on Android d
 The library implements a multi-layered security architecture:
 
 1. **Master Key** - Stored in Android Keystore (hardware-backed when available)
-2. **Data Encryption Keys (DEKs)** - Encrypted by the master key
-3. **Your Data** - Encrypted by DEKs using AES-256-GCM
+2. **Keysets** - Tink data encryption keys, stored encrypted by the master key
+3. **Your Data** - Encrypted by the keysets using the configured algorithm (AES-256-GCM by default)
 
 ## Quick Example
 

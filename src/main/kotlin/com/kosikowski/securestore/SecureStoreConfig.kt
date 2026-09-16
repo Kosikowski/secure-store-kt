@@ -333,7 +333,7 @@ class SecureStoreConfig private constructor(
         /**
          * Default configuration.
          * - AES-256-GCM encryption
-         * - Software key protection
+         * - No hardware requirement
          * - Device-protected storage
          * - Associated data enabled
          */
@@ -343,7 +343,7 @@ class SecureStoreConfig private constructor(
          * High-security configuration with hardware-backed keys and encrypted metadata.
          * - Namespace "high_security", so it does not share data with [DEFAULT]
          * - AES-256-GCM encryption
-         * - Hardware-required key protection
+         * - Master key required to be in secure hardware
          * - Encrypted keys and file names
          * - Secure memory wiping
          * - Corrupted entries are deleted
@@ -364,7 +364,7 @@ class SecureStoreConfig private constructor(
          * - Namespace "default", like [DEFAULT]. The two store values differently (see
          *   [useAssociatedData]), so to use both, give one of them its own namespace with [toBuilder]
          * - ChaCha20-Poly1305 (faster on devices without AES-NI)
-         * - Software key protection
+         * - No hardware requirement
          * - No metadata encryption
          * - No secure memory wiping
          */

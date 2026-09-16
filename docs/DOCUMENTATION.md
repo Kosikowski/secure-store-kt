@@ -215,15 +215,15 @@ try {
 
 ### With Maven Central Release
 
-Documentation JARs are automatically generated and published:
+Documentation JARs are generated and published with every release (see [PUBLISHING.md](PUBLISHING.md)):
 
 ```bash
-./gradlew publishReleasePublicationToSonatypeRepository
+./gradlew publishAndReleaseToMavenCentral
 ```
 
 This creates:
-- `securestore-1.0.0-javadoc.jar` - Javadoc format
-- `securestore-1.0.0-sources.jar` - Source code
+- `securestore-<version>-javadoc.jar` - Javadoc format
+- `securestore-<version>-sources.jar` - Source code
 
 ### Standalone Documentation
 
@@ -281,7 +281,8 @@ git push
  * @param context Android application context
  * @param config Configuration for the secure store (defaults to [SecureStoreConfig.DEFAULT])
  * @throws SecureStoreException.InitializationException if Tink initialization fails
- * @throws SecureStoreException.HardwareRequiredException if hardware keys are required but unavailable
+ * @throws IllegalArgumentException if another store in this process uses the same storage mode and namespace
+ *   with a different master key alias
  *
  * @see SecureStorage
  * @see SecureStoreConfig

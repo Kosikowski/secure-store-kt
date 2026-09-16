@@ -18,15 +18,15 @@ SecureStore/
     ├── SECURITY.md        # Security information
     ├── TESTING.md         # Testing guide
     ├── PUBLISHING.md      # Publishing to Maven Central
-    └── PROJECT_SUMMARY.md # Project summary
+    └── README.md          # This overview
 ```
 
 ## 🚀 Quick Links
 
-- **[README.md](README.md)** - Start here
-- **[Quick Start](docs/QUICKSTART.md)** - Get up and running
-- **[Examples](docs/EXAMPLES.md)** - See code examples
-- **[API Documentation](docs/DOCUMENTATION.md)** - Learn how to generate docs
+- **[README.md](../README.md)** - Start here
+- **[Quick Start](QUICKSTART.md)** - Get up and running
+- **[Examples](EXAMPLES.md)** - See code examples
+- **[API Documentation](DOCUMENTATION.md)** - Learn how to generate docs
 
 ## 📖 Generating API Documentation
 
@@ -76,13 +76,14 @@ Output: `build/dokka/javadoc/`
 
 | Guide | Description |
 |-------|-------------|
-| [QUICKSTART.md](docs/QUICKSTART.md) | Get started in 5 minutes |
-| [EXAMPLES.md](docs/EXAMPLES.md) | Comprehensive code examples |
-| [TESTING.md](docs/TESTING.md) | How to write and run tests |
-| [SECURITY.md](docs/SECURITY.md) | Security model and guarantees |
-| [CONTRIBUTING.md](docs/CONTRIBUTING.md) | How to contribute |
-| [PUBLISHING.md](docs/PUBLISHING.md) | Publish to Maven Central |
-| [DOCUMENTATION.md](docs/DOCUMENTATION.md) | Generate and manage docs |
+| [QUICKSTART.md](QUICKSTART.md) | Get started in 5 minutes |
+| [EXAMPLES.md](EXAMPLES.md) | Comprehensive code examples |
+| [TESTING.md](TESTING.md) | How to write and run tests |
+| [SECURITY.md](SECURITY.md) | Security model and guarantees |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute |
+| [PUBLISHING.md](PUBLISHING.md) | Publish to Maven Central |
+| [DOCUMENTATION.md](DOCUMENTATION.md) | Generate and manage docs |
+| [CHANGELOG.md](CHANGELOG.md) | Version history |
 
 ## 🔧 Documentation Options
 

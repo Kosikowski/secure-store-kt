@@ -2,23 +2,47 @@
 
 ## Test Configuration
 
-SecureStore uses **instrumented tests** (also called Android Tests) rather than unit tests because:
-- The library requires Android framework APIs (Context, SharedPreferences, File system)
-- Encryption uses Android Keystore which requires a real Android environment
-- Tests verify actual encryption/decryption on Android
+SecureStore has two kinds of tests:
+
+- **Unit tests** (`src/test`) run on the JVM and cover logic without Android dependencies, such as
+  deciding whether a failure means the keysets are lost.
+- **Instrumented tests** (`src/androidTest`) run on a device or emulator. Most behaviour needs them,
+  because the library relies on Android Keystore, SharedPreferences and the app's storage.
 
 ## Running Tests
 
-### Prerequisites
+### Unit Tests
+
+```bash
+./gradlew test
+```
+
+### Instrumented Tests
+
 You need either:
 - A physical Android device connected via USB with Developer Mode enabled
 - An Android emulator running (API 24+)
 
-### Running Instrumented Tests
+```bash
+./gradlew connectedAndroidTest
+```
+
+CI runs both on every pull request, the instrumented tests on an API 30 emulator
+(`.github/workflows/ci.yml`).
+
+### Running Specific Tests
 
 ```bash
-# Start an emulator first, then run:
-./gradlew connectedAndroidTest
+# One instrumented test class
+./gradlew connectedAndroidTest \
+  -Pandroid.testInstrumentationRunnerArguments.class=com.kosikowski.securestore.KeysetLossInstrumentedTest
+
+# One instrumented test method
+./gradlew connectedAndroidTest \
+  -Pandroid.testInstrumentationRunnerArguments.class=com.kosikowski.securestore.SecureStorageInstrumentedTest#putAndGetString_roundTrip
+
+# One unit test class (the aggregate `test` task does not accept --tests)
+./gradlew testDebugUnitTest --tests "com.kosikowski.securestore.KeysetLossTest"
 ```
 
 ### Common Issues
@@ -57,7 +81,7 @@ Or via command line:
 sdkmanager --list | grep system-images
 
 # Create emulator
-avdmanager create avd -n test_device -k "system-images;android-29;google_apis;x86_64"
+avdmanager create avd -n test_device -k "system-images;android-30;google_apis;x86_64"
 
 # Start emulator
 emulator -avd test_device
@@ -65,52 +89,34 @@ emulator -avd test_device
 
 ## Test Structure
 
-All tests are located in:
 ```
+src/test/kotlin/com/kosikowski/securestore/
+└── KeysetLossTest.kt                     # 8 tests: which failures mean the keysets are lost
+
 src/androidTest/kotlin/com/kosikowski/securestore/
-└── SecureStorageInstrumentedTest.kt
+├── SecureStorageInstrumentedTest.kt      # 38 tests: strings, objects, blobs, thread safety, edge cases, configuration
+├── KeysetLossInstrumentedTest.kt         # 9 tests: lost master key or corrupt keyset, RESET/THROW, reset(), onKeysetReset
+├── KeysetStorageInstrumentedTest.kt      # 5 tests: where keysets are stored, copying keysets written by 1.0.0
+├── StoreInstancesInstrumentedTest.kt     # 6 tests: several instances of one store, resets during writes, blob locks, master key aliases, presets
+├── NameEncryptionInstrumentedTest.kt     # 4 tests: encrypted key and file names, removal of 1.0.0 entries
+├── BlobFilesInstrumentedTest.kt          # 3 tests: atomic blob writes
+├── KeyProtectionInstrumentedTest.kt      # 2 tests: HARDWARE_REQUIRED and isHardwareBacked
+└── KeyRotationInstrumentedTest.kt        # 1 test: rotateKeys()
 ```
 
-### Test Categories
+**Total: 8 unit tests and 68 instrumented tests.**
 
-1. **Basic Operations** (11 tests)
-   - String storage/retrieval
-   - Object serialization
-   - Blob (file) operations
-   - Clear all data
-
-2. **Thread-Safety** (9 tests)
-   - Concurrent file writes
-   - Concurrent reads/writes
-   - Stress tests with mixed operations
-
-3. **Edge Cases** (3 tests)
-   - Empty data
-   - Large payloads (1MB)
-
-**Total: 23 comprehensive test cases**
-
-## Running Specific Tests
-
-```bash
-# Run all tests
-./gradlew connectedAndroidTest
-
-# Run specific test class
-./gradlew connectedAndroidTest --tests "*.SecureStorageInstrumentedTest"
-
-# Run specific test method
-./gradlew connectedAndroidTest --tests "*.test_put_and_get_string_returns_same_value"
-```
+The key protection tests check where Android Keystore actually keeps the master key, so they pass both
+on devices with secure hardware and on emulators that keep keys in software.
 
 ## Test Reports
 
-After running tests, view the HTML report:
+After running tests, view the HTML reports:
 ```
-build/reports/androidTests/connected/index.html
+build/reports/tests/testDebugUnitTest/index.html
+build/reports/androidTests/connected/debug/index.html
 ```
 
-## Troubleshooting
 ## Troubleshooting
 
 ### Tests fail with SecurityException
@@ -119,9 +125,8 @@ build/reports/androidTests/connected/index.html
 - Ensure device is not in restricted mode
 
 ### Tests timeout
-- Increase timeout in test configuration
-- Close other apps on emulator to free resources
-- Use x86_64 emulator for better performance
+- Close other apps on the emulator to free resources
+- Use an x86_64 emulator for better performance
 
 ### Import errors in IDE
 - The IDE may show "unresolved reference" errors for Android APIs
@@ -130,31 +135,39 @@ build/reports/androidTests/connected/index.html
 
 ## Test Execution Time
 
-Approximate execution times:
-- All tests: ~2-3 minutes on emulator
-- Basic operations: ~30 seconds
-- Thread-safety tests: ~1-2 minutes
-- On physical device: Usually faster than emulator
+The 68 instrumented tests take about a minute on a physical device (an Android 12 terminal); emulators
+are slower. The unit tests take a few seconds.
 
 ## Adding New Tests
 
-When adding tests:
-1. Place in `src/androidTest/kotlin/com/kosikowski/securestore/`
-2. Annotate class with `@RunWith(AndroidJUnit4::class)`
+When adding instrumented tests:
+1. Place them in `src/androidTest/kotlin/com/kosikowski/securestore/`
+2. Annotate the class with `@RunWith(AndroidJUnit4::class)`
 3. Use `runBlocking` for suspend functions
-4. Clear storage in `@Before` and `@After`
+4. Use a namespace unique to the test class instance, so tests don't share keysets or data
+5. In `@After`, call `reset()` and delete the namespace's master key from Android Keystore
 
 Example:
 ```kotlin
-@Test
-fun test_my_new_feature_works_correctly() = runBlocking {
-    // Given
-    val testData = "test"
-    
-    // When
-    secureStorage.putString("key", testData)
-    
-    // Then
-    assertEquals(testData, secureStorage.getString("key"))
+@RunWith(AndroidJUnit4::class)
+class MyFeatureInstrumentedTest {
+    private val context: Context = ApplicationProvider.getApplicationContext()
+    private val namespace = "my_feature_${System.nanoTime()}"
+    private val storage = SecureStorageImpl(context, SecureStoreConfig.Builder().namespace(namespace).build())
+
+    @After
+    fun tearDown() =
+        runBlocking {
+            storage.reset()
+            KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry("secure_store_master_key_$namespace")
+        }
+
+    @Test
+    fun myFeature_worksCorrectly() =
+        runBlocking {
+            storage.putString("key", "value")
+
+            assertEquals("value", storage.getString("key"))
+        }
 }
 ```

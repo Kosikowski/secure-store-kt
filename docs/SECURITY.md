@@ -38,10 +38,11 @@ All algorithms provide:
 | HARDWARE_REQUIRED | Operations throw `HardwareRequiredException` unless the master key is in secure hardware | Refuse to store data with software-only keys |
 
 ### Key Management
-- **Storage**: Android Keystore (hardware-backed when available)
-- **Protection**: Keys in secure hardware never leave it; `getStoreInfo().isHardwareBacked` reports where the master key is
+- **Storage**: The master key is in Android Keystore (hardware-backed when available); the Tink keysets are stored encrypted by it
+- **Protection**: A master key in secure hardware never leaves it; `getStoreInfo().isHardwareBacked` reports where it is
 - **Generation**: Cryptographically secure random generation
-- **Isolation**: Separate keys for preferences, files, and metadata
+- **Isolation**: Separate keysets for values, blobs and (when enabled) names
+- **Rotation**: `rotateKeys()` adds a new primary key for values and blobs; earlier keys stay so existing data remains readable
 - **Keyset location**: Keysets are stored next to the data they protect; `DEVICE_PROTECTED` keeps both in device-protected storage
 
 ### Metadata Protection
@@ -74,7 +75,7 @@ When `secureMemory` is enabled:
 Standard security for most applications:
 ```kotlin
 - AES-256-GCM encryption
-- Software key protection
+- No hardware requirement
 - Device-protected storage
 - Associated data enabled
 - No metadata encryption
@@ -85,7 +86,7 @@ Maximum security for sensitive applications:
 ```kotlin
 - Namespace "high_security"
 - AES-256-GCM encryption
-- Hardware-required key protection
+- Master key required to be in secure hardware
 - Device-protected storage
 - Associated data enabled
 - Key encryption enabled
@@ -98,9 +99,11 @@ Maximum security for sensitive applications:
 Optimized for speed:
 ```kotlin
 - ChaCha20-Poly1305 encryption
-- Software key protection
+- No hardware requirement
 - No metadata encryption
+- No associated data
 - No secure memory wiping
+- Namespace "default", shared with DEFAULT; give one of them its own namespace to use both
 ```
 
 ## Reporting a Vulnerability
@@ -121,7 +124,7 @@ Instead, please report them via email to:
    - Android version
    - Device model
    - Configuration used
-4. **Suggested Fix**: If you have one
+5. **Suggested Fix**: If you have one
 
 ### Response Timeline
 
@@ -271,14 +274,13 @@ When the keys are lost, or a keyset is corrupted, the data cannot be recovered. 
 (default) discards it and starts with new keysets, reporting through `onKeysetReset`;
 `KeysetLossPolicy.THROW` throws `KeysetLostException` until `reset()` is called.
 
-### 4. Screen Lock Requirement
-- **Requirement**: Device must have a screen lock for hardware-backed keys
-- **Reason**: Required for Android Keystore security
-- **Fallback**: SOFTWARE key protection works without screen lock
+### 4. Before the First Unlock
+- **DEVICE_PROTECTED** stores can be used before the user unlocks the device only in direct-boot-aware apps
+- A store upgraded from 1.0.0 that already holds data cannot be opened until the first unlock, when its keysets are copied to device-protected storage
 
 ### 5. Hardware Availability
-- **HARDWARE_REQUIRED**: May fail on older devices
-- **Solution**: Use HARDWARE_PREFERRED for broader compatibility
+- **HARDWARE_REQUIRED**: Operations throw `HardwareRequiredException` where the master key is not in secure hardware, e.g. on emulators and devices without a TEE
+- **Solution**: Use `KeyProtection.SOFTWARE` where software keys are acceptable
 
 ## Security Audits
 
@@ -343,4 +345,4 @@ For security questions (non-vulnerabilities):
 
 ---
 
-Last Updated: 2025-11-28
+Last Updated: 2026-09-16
