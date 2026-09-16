@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `saveBlob` overwrote the blob file in place, so a crash during the write left a truncated blob that could no longer be decrypted. The new content is now written and synced to a separate file and renamed over the blob
 - Recovery from a lost master key no longer treats a Keystore that cannot be reached as a deleted key. Up to Android 11 Keystore lookups report a key as absent when the Keystore service cannot be reached, which `KeysetLossPolicy.RESET` would have answered by deleting the data; a missing key now counts only after the Keystore has created and found a probe key
 - `KeyProtection.HARDWARE_REQUIRED` was never enforced and `getStoreInfo().isHardwareBacked` was always true on Android 6+. Both now check where Android Keystore keeps the master key: operations throw `HardwareRequiredException` when it is not in secure hardware, and `isHardwareBacked` is false until the master key exists. The constructor no longer throws `HardwareRequiredException`, because the key is created on the first operation
 - Concurrent operations on the same blob could read a partially written file and fail to decrypt it: deleting a blob removed its lock while other callers still waited on it, so the next caller created a second lock for the same file

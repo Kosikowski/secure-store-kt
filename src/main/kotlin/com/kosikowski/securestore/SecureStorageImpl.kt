@@ -20,6 +20,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
 import java.security.GeneralSecurityException
 import java.security.KeyStore
@@ -386,6 +387,7 @@ class SecureStorageImpl(
             storageDirectory.listFiles()?.forEach { file ->
                 if (!file.delete()) throw IOException("Failed to delete $file")
             }
+            deletePartialBlobFiles()
 
             listOf(tinkKeysetName, tinkPrefsKeysetName, tinkNamesKeysetName, tinkMetadataKeysetName)
                 .forEach { deleteSharedPreferencesOrThrow(keysetContext, it) }
@@ -409,6 +411,11 @@ class SecureStorageImpl(
                 mkdirs()
             }
         }
+    }
+
+    /** Namespaces cannot contain '.', so this cannot be another namespace's blob directory. */
+    private val partialBlobDirectory: File by lazy {
+        File(storageContext.filesDir, "$secureFileDir.partial").apply { mkdirs() }
     }
 
     private fun getFileLock(fileName: String): Any = shared.fileLocks[Math.floorMod(fileName.hashCode(), FILE_LOCK_STRIPES)]
@@ -559,7 +566,7 @@ class SecureStorageImpl(
             synchronized(getFileLock(storageFileName)) {
                 try {
                     val ciphertext = keysets.fileAead.encrypt(payload, associatedData)
-                    getFile(storageFileName).writeBytes(ciphertext)
+                    writeBlobFile(storageFileName, ciphertext)
 
                     if (config.secureMemory) {
                         payload.fill(0)
@@ -630,6 +637,7 @@ class SecureStorageImpl(
                             file.delete()
                         }
                     }
+                    deletePartialBlobFiles()
                 } catch (e: SecureStoreException) {
                     throw e
                 } catch (e: Exception) {
@@ -700,6 +708,30 @@ class SecureStorageImpl(
     // ==================== Private Helpers ====================
 
     private fun getFile(fileName: String): File = File(storageDirectory, fileName)
+
+    /**
+     * A crash while overwriting a blob in place would leave a truncated file that no longer decrypts.
+     * The new content is written and synced to a separate file first, then renamed over the blob, so
+     * the blob holds either its old or its new content.
+     */
+    private fun writeBlobFile(storageFileName: String, content: ByteArray) {
+        val partial = File(partialBlobDirectory, storageFileName)
+        FileOutputStream(partial).use { output ->
+            output.write(content)
+            output.fd.sync()
+        }
+        if (!partial.renameTo(getFile(storageFileName))) {
+            partial.delete()
+            throw IOException("Failed to replace blob file $storageFileName")
+        }
+    }
+
+    /** A partial file shares its blob's name, so its lock keeps this from deleting a write in progress. */
+    private fun deletePartialBlobFiles() {
+        partialBlobDirectory.listFiles()?.forEach { file ->
+            synchronized(getFileLock(file.name)) { file.delete() }
+        }
+    }
 
     private fun removeValue(keysets: Keysets, key: String) {
         try {
