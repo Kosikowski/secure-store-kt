@@ -138,7 +138,8 @@ class StoreInstancesInstrumentedTest {
     fun defaultAndHighSecurityPresets_keepTheirDataApart() =
         runBlocking {
             val default = SecureStorageImpl(context, SecureStoreConfig.DEFAULT)
-            val highSecurity = SecureStorageImpl(context, SecureStoreConfig.HIGH_SECURITY)
+            // Software keys are allowed so the test also runs on emulators; only the namespace matters here.
+            val highSecurity = SecureStorageImpl(context, SecureStoreConfig.HIGH_SECURITY.toBuilder().keyProtection(KeyProtection.SOFTWARE).build())
             try {
                 default.putString(KEY, VALUE)
                 highSecurity.putString(KEY, OTHER_VALUE)
