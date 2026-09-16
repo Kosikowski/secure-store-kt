@@ -187,7 +187,8 @@ interface SecureStorage {
  * Metadata about a SecureStore instance.
  *
  * @property encryptionAlgorithm The encryption algorithm in use
- * @property isHardwareBacked Whether keys are backed by hardware (TEE/StrongBox)
+ * @property isHardwareBacked Whether the master key is kept in secure hardware (TEE or StrongBox). False until
+ *   the store has created its master key, which happens on its first operation
  * @property namespace The namespace this store operates in
  * @property keyEncryptionEnabled Whether SharedPreferences keys are encrypted
  * @property fileNameEncryptionEnabled Whether blob file names are encrypted

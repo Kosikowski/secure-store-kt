@@ -358,7 +358,7 @@ val secureStorage = SecureStorageImpl(context, config)
 ```
 ┌─────────────────────────────────────┐
 │        Android Keystore             │
-│    (Hardware-backed, StrongBox)     │
+│   (secure hardware when available)  │
 └────────────────┬────────────────────┘
                  │ Protects
                  ▼
@@ -468,8 +468,8 @@ interface SecureStorage {
 
 ### Issue: `SecureStoreException.HardwareRequiredException`
 
-**Cause**: Hardware-backed keys required but device doesn't support them  
-**Solution**: Use `KeyProtection.HARDWARE_PREFERRED` or `KeyProtection.SOFTWARE`
+**Cause**: `KeyProtection.HARDWARE_REQUIRED` is set (as in `HIGH_SECURITY`) but the device keeps the master key in software, for example on an emulator  
+**Solution**: Use `KeyProtection.SOFTWARE` where software keys are acceptable
 
 ### Issue: Data lost after app reinstall
 

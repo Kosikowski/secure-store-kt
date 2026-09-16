@@ -33,13 +33,13 @@ All algorithms provide:
 
 | Level | Description | Use Case |
 |-------|-------------|----------|
-| SOFTWARE | Software-backed keys (default) | General purpose, works on all devices |
-| HARDWARE_PREFERRED | Hardware-backed when available | Recommended for sensitive data |
-| HARDWARE_REQUIRED | Hardware-backed required | Maximum security, may fail on some devices |
+| SOFTWARE | No requirement (default); Android Keystore still uses secure hardware when the device has it | General purpose, works on all devices |
+| HARDWARE_PREFERRED | Same as SOFTWARE | General purpose, works on all devices |
+| HARDWARE_REQUIRED | Operations throw `HardwareRequiredException` unless the master key is in secure hardware | Refuse to store data with software-only keys |
 
 ### Key Management
 - **Storage**: Android Keystore (hardware-backed when available)
-- **Protection**: Keys never leave secure hardware
+- **Protection**: Keys in secure hardware never leave it; `getStoreInfo().isHardwareBacked` reports where the master key is
 - **Generation**: Cryptographically secure random generation
 - **Isolation**: Separate keys for preferences, files, and metadata
 - **Keyset location**: Keysets are stored next to the data they protect; `DEVICE_PROTECTED` keeps both in device-protected storage
@@ -59,9 +59,8 @@ always has the same stored name in a store, which shows when a name is written a
 
 ### Android Integration
 - **Keystore**: Uses Android Keystore system
-- **StrongBox**: Utilizes StrongBox when available (Pixel 3+, Samsung S9+)
-- **TEE**: Trusted Execution Environment support
-- **Attestation**: Key attestation on supported devices
+- **TEE**: Android Keystore keeps the master key in the Trusted Execution Environment when the device has one
+- **StrongBox**: Not requested; Tink creates the master key without StrongBox
 
 ### Secure Memory
 

@@ -38,20 +38,20 @@ enum class EncryptionAlgorithm(internal val keyTemplate: KeyTemplate) {
  */
 enum class KeyProtection {
     /**
-     * Use software-backed keys (default).
-     * Works on all devices.
+     * No requirement (default). Works on all devices. Android Keystore still keeps the key in secure
+     * hardware when the device has it.
      */
     SOFTWARE,
 
     /**
-     * Prefer hardware-backed keys (TEE) when available.
-     * Falls back to software if hardware unavailable.
+     * No requirement, same as [SOFTWARE]: Android Keystore keeps the key in secure hardware (TEE) when
+     * the device has it and in software otherwise.
      */
     HARDWARE_PREFERRED,
 
     /**
-     * Require hardware-backed keys (StrongBox or TEE).
-     * Throws exception if hardware backing is unavailable.
+     * Require the master key to be kept in secure hardware (TEE or StrongBox). Operations throw
+     * [SecureStoreException.HardwareRequiredException] when it is not.
      */
     HARDWARE_REQUIRED,
 }

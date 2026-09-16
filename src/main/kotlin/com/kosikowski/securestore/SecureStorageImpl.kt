@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import android.os.Build
 import android.os.UserManager
 import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyInfo
 import android.security.keystore.KeyProperties
 import com.google.crypto.tink.Aead
 import com.google.crypto.tink.DeterministicAead
@@ -23,6 +24,8 @@ import java.io.IOException
 import java.security.GeneralSecurityException
 import java.security.KeyStore
 import java.util.concurrent.ConcurrentHashMap
+import javax.crypto.SecretKey
+import javax.crypto.SecretKeyFactory
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.read
@@ -38,7 +41,7 @@ import kotlin.concurrent.write
  * - All file operations are synchronized to prevent concurrent access corruption
  *
  * ## Security Features
- * - Hardware-backed encryption keys when available (StrongBox/TEE)
+ * - Keys kept in secure hardware (TEE or StrongBox) when the device has it
  * - AES-256-GCM encryption (configurable)
  * - Authenticated encryption prevents tampering
  * - Keys never leave the secure hardware
@@ -65,7 +68,6 @@ import kotlin.concurrent.write
  * @param context Android application context
  * @param config Configuration for the secure store (defaults to [SecureStoreConfig.DEFAULT])
  * @throws SecureStoreException.InitializationException if Tink initialization fails
- * @throws SecureStoreException.HardwareRequiredException if hardware keys are required but unavailable
  * @throws IllegalArgumentException if another store in this process uses the same storage mode and namespace
  *   with a different master key alias
  *
@@ -102,12 +104,6 @@ class SecureStorageImpl(
             throw SecureStoreException.InitializationException("Failed to initialize Tink AEAD", e)
         }
 
-        // Verify hardware backing if required
-        if (config.keyProtection == KeyProtection.HARDWARE_REQUIRED) {
-            if (!isHardwareBackedKeystore()) {
-                throw SecureStoreException.HardwareRequiredException()
-            }
-        }
     }
 
     private val appContext: Context = context.applicationContext
@@ -209,7 +205,11 @@ class SecureStorageImpl(
         openKeysets?.takeIf { it.generation == shared.generation }?.let { return it }
         shared.lock.write {
             openKeysets?.takeIf { it.generation == shared.generation }?.let { return it }
-            return openKeysetsRecoveringLoss().also { openKeysets = it }
+            val keysets = openKeysetsRecoveringLoss()
+            if (config.keyProtection == KeyProtection.HARDWARE_REQUIRED && !masterKeyIsHardwareBacked()) {
+                throw SecureStoreException.HardwareRequiredException()
+            }
+            return keysets.also { openKeysets = it }
         }
     }
 
@@ -665,7 +665,7 @@ class SecureStorageImpl(
 
     override fun getStoreInfo(): SecureStoreInfo = SecureStoreInfo(
         encryptionAlgorithm = config.encryption.name,
-        isHardwareBacked = isHardwareBackedKeystore(),
+        isHardwareBacked = runCatching { masterKeyIsHardwareBacked() }.getOrDefault(false),
         namespace = config.namespace,
         keyEncryptionEnabled = config.encryptKeys,
         fileNameEncryptionEnabled = config.encryptFileNames,
@@ -694,22 +694,20 @@ class SecureStorageImpl(
         }
     }
 
-    private fun isHardwareBackedKeystore(): Boolean {
-        return try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                // Check for StrongBox on Android 12+
-                val keyStore = KeyStore.getInstance("AndroidKeyStore")
-                keyStore.load(null)
-                // Try to check if hardware-backed keys are supported
-                true // Simplified check - real implementation would verify key properties
-            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                // Basic hardware-backed keystore check for older devices
-                true
-            } else {
-                false
-            }
-        } catch (e: Exception) {
-            false
+    /**
+     * Whether the master key is kept in secure hardware (TEE or StrongBox). Android Keystore decides
+     * where a key lives when Tink creates it, so this can only be checked once the key exists.
+     */
+    private fun masterKeyIsHardwareBacked(): Boolean {
+        val key = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }.getKey(masterKeyAlias, null) as? SecretKey ?: return false
+        val keyInfo = SecretKeyFactory.getInstance(key.algorithm, ANDROID_KEYSTORE).getKeySpec(key, KeyInfo::class.java) as KeyInfo
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            keyInfo.securityLevel == KeyProperties.SECURITY_LEVEL_TRUSTED_ENVIRONMENT ||
+                keyInfo.securityLevel == KeyProperties.SECURITY_LEVEL_STRONGBOX ||
+                keyInfo.securityLevel == KeyProperties.SECURITY_LEVEL_UNKNOWN_SECURE
+        } else {
+            @Suppress("DEPRECATION")
+            keyInfo.isInsideSecureHardware
         }
     }
 
