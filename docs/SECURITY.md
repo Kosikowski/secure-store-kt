@@ -54,6 +54,9 @@ Optional encryption of metadata to hide what data is stored:
 | `encryptFileNames` | Encrypts blob file names |
 | `useAssociatedData` | Binds ciphertext to key/filename, preventing relocation attacks |
 
+Names are encrypted deterministically (AES-SIV) so they can be looked up again. The same name therefore
+always has the same stored name in a store, which shows when a name is written again, but not the name.
+
 ### Android Integration
 - **Keystore**: Uses Android Keystore system
 - **StrongBox**: Utilizes StrongBox when available (Pixel 3+, Samsung S9+)

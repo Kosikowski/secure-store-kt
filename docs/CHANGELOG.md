@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Entries and blobs stored under names encrypted by 1.0.0 are deleted on the first open. They could never be read, and removing them never worked, so recovering them could bring back values the app had removed
 - `DEVICE_PROTECTED` stores keep their keysets in device-protected storage. Keysets written by 1.0.0 are copied on the first open after the user has unlocked, leaving the originals for a `CREDENTIAL_PROTECTED` store with the same namespace; until then a store that already holds data throws `InitializationException`
 - Every operation except `getStoreInfo` throws `InitializationException` or `KeysetLostException` when the store cannot be opened. Reads no longer apply `decryptionFailurePolicy` to it (which returned null by default), `removeString` and `clearAll` no longer wrap it in `StorageException`, and `blobExists`, `deleteBlob` and `getAllBlobNames` now open the store as well
 - Instances with the same storage mode and namespace share their state within a process: a reset through one of them applies to all, and operations and resets on the store wait for each other
@@ -22,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- With `encryptKeys` or `encryptFileNames`, stored values and blobs could never be found again: names were encrypted with a randomized AEAD, so every lookup produced a different name. `getString` returned null right after `putString`, `readBlob` right after `saveBlob`, and removals had no effect. Names are now encrypted deterministically with AES-SIV, in a separate keyset
+- `contains` encrypted the key twice with `encryptKeys` and always returned false
 - A store whose Keystore master key was deleted, for example by clearing the data of the app or of another app sharing its user ID, failed on every operation until the app was reinstalled
 - `DEVICE_PROTECTED` stores kept their keysets in credential-encrypted storage, because Tink reads keysets through `Context.getApplicationContext()`, so they could not be opened before the first unlock
 

@@ -7,7 +7,11 @@ import android.os.UserManager
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import com.google.crypto.tink.Aead
+import com.google.crypto.tink.DeterministicAead
+import com.google.crypto.tink.KeysetHandle
 import com.google.crypto.tink.aead.AeadConfig
+import com.google.crypto.tink.daead.DeterministicAeadConfig
+import com.google.crypto.tink.daead.DeterministicAeadKeyTemplates
 import com.google.crypto.tink.integration.android.AndroidKeysetManager
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -91,6 +95,7 @@ class SecureStorageImpl(
         // Register Tink AEAD primitives
         try {
             AeadConfig.register()
+            DeterministicAeadConfig.register()
         } catch (e: GeneralSecurityException) {
             throw SecureStoreException.InitializationException("Failed to initialize Tink AEAD", e)
         }
@@ -156,7 +161,7 @@ class SecureStorageImpl(
     private class Keysets(
         val generation: Long,
         val fileAead: Aead,
-        val metadataAead: Aead?,
+        val names: NameCipher?,
         val preferences: SharedPreferences,
     )
 
@@ -182,7 +187,7 @@ class SecureStorageImpl(
     }
 
     /**
-     * The file, preferences and (when enabled) metadata keysets, opened together: they are protected
+     * The file, preferences and (when enabled) name keysets, opened together: they are protected
      * by the same master key and are lost together. Separate keysets for defense in depth.
      */
     private fun currentKeysets(): Keysets {
@@ -225,16 +230,17 @@ class SecureStorageImpl(
 
     private fun openKeysetsOrThrow(): Keysets =
         try {
-            val metadata = if (usesMetadataKeyset) keysetAead(tinkMetadataKeysetPref, tinkMetadataKeysetName) else null
+            removeEntriesWithLegacyNames()
+            val names = if (usesNameEncryption) NameCipher(nameKeyset().getPrimitive(DeterministicAead::class.java)) else null
             Keysets(
                 generation = shared.generation,
                 fileAead = keysetAead(tinkKeysetPref, tinkKeysetName),
-                metadataAead = metadata,
+                names = names,
                 preferences =
                     TinkEncryptedSharedPreferences(
                         delegate = storageContext.getSharedPreferences(sharedPrefsName, Context.MODE_PRIVATE),
                         aead = keysetAead(tinkPrefsKeysetPref, tinkPrefsKeysetName),
-                        metadataAead = if (config.encryptKeys) metadata else null,
+                        names = if (config.encryptKeys) names else null,
                         useAssociatedData = config.useAssociatedData,
                         secureMemory = config.secureMemory,
                     ),
@@ -252,6 +258,38 @@ class SecureStorageImpl(
             .keysetHandle
             .getPrimitive(Aead::class.java)
 
+    private fun nameKeyset(): KeysetHandle =
+        AndroidKeysetManager.Builder()
+            .withSharedPref(keysetContext, tinkNamesKeysetPref, tinkNamesKeysetName)
+            .withKeyTemplate(DeterministicAeadKeyTemplates.AES256_SIV)
+            .withMasterKeyUri(masterKeyUri)
+            .build()
+            .keysetHandle
+
+    /**
+     * Up to 1.0.0 key and file names were encrypted with a randomized AEAD, so a name never matched its
+     * stored name again: those entries could not be read, and removing them had no effect. Recovering
+     * them could bring back values the app had removed, so they are deleted together with the keyset
+     * that encrypted their names.
+     */
+    private fun removeEntriesWithLegacyNames() {
+        if (!keysetContext.sharedPreferencesFile(tinkMetadataKeysetName).exists()) return
+
+        val legacyNames = keysetAead(tinkMetadataKeysetPref, tinkMetadataKeysetName)
+        val isLegacyName = { name: String ->
+            runCatching { legacyNames.decrypt(android.util.Base64.decode(name, LEGACY_NAME_BASE64_FLAGS), null) }.isSuccess
+        }
+        val values = storageContext.getSharedPreferences(sharedPrefsName, Context.MODE_PRIVATE)
+        val legacyKeys = values.all.keys.filter(isLegacyName)
+        if (legacyKeys.isNotEmpty()) {
+            values.edit().apply { legacyKeys.forEach(::remove) }.commitOrThrow()
+        }
+        storageDirectory.listFiles()?.filter { isLegacyName(it.name) }?.forEach { file ->
+            if (!file.delete()) throw IOException("Failed to delete $file")
+        }
+        deleteSharedPreferencesOrThrow(keysetContext, tinkMetadataKeysetName)
+    }
+
     /**
      * Up to 1.0.0 a DEVICE_PROTECTED store kept its keysets in credential-encrypted storage (see
      * [KeysetStorageContext]), in the files a CREDENTIAL_PROTECTED store with the same namespace uses.
@@ -263,7 +301,7 @@ class SecureStorageImpl(
     private fun copyLegacyKeysets() {
         if (config.storageMode != StorageMode.DEVICE_PROTECTED) return
 
-        val missing = usedKeysetFileNames.filterNot { storageContext.sharedPreferencesFile(it).exists() }
+        val missing = listOf(tinkKeysetName, tinkPrefsKeysetName).filterNot { storageContext.sharedPreferencesFile(it).exists() }
         if (missing.isEmpty() || !hasStoredData()) return
 
         if (!isUserUnlocked()) {
@@ -272,7 +310,7 @@ class SecureStorageImpl(
             )
         }
         try {
-            missing.forEach(::copyLegacyKeyset)
+            (missing + tinkMetadataKeysetName).forEach(::copyLegacyKeyset)
         } catch (e: IOException) {
             throw SecureStoreException.InitializationException("Failed to copy keysets to device-protected storage", e)
         }
@@ -309,7 +347,8 @@ class SecureStorageImpl(
             }
             shared.fileLocks.clear()
 
-            listOf(tinkKeysetName, tinkPrefsKeysetName, tinkMetadataKeysetName).forEach { deleteSharedPreferencesOrThrow(keysetContext, it) }
+            listOf(tinkKeysetName, tinkPrefsKeysetName, tinkNamesKeysetName, tinkMetadataKeysetName)
+                .forEach { deleteSharedPreferencesOrThrow(keysetContext, it) }
         } finally {
             shared.generation++
         }
@@ -366,11 +405,14 @@ class SecureStorageImpl(
     private val tinkMetadataKeysetName: String
         get() = "secure_storage_metadata_key_${config.namespace}"
 
-    private val usesMetadataKeyset: Boolean
-        get() = config.encryptKeys || config.encryptFileNames
+    private val tinkNamesKeysetPref: String
+        get() = "secure_storage_names_keyset_pref_${config.namespace}"
 
-    private val usedKeysetFileNames: List<String>
-        get() = listOfNotNull(tinkKeysetName, tinkPrefsKeysetName, tinkMetadataKeysetName.takeIf { usesMetadataKeyset })
+    private val tinkNamesKeysetName: String
+        get() = "secure_storage_names_key_${config.namespace}"
+
+    private val usesNameEncryption: Boolean
+        get() = config.encryptKeys || config.encryptFileNames
 
     // ==================== String Operations ====================
 
@@ -405,8 +447,7 @@ class SecureStorageImpl(
 
     override suspend fun contains(key: String): Boolean = withContext(config.ioDispatcher) {
         withKeysets { keysets ->
-            val storageKey = if (config.encryptKeys) keysets.encryptKey(key) else key
-            keysets.preferences.contains(storageKey)
+            keysets.preferences.contains(key)
         }
     }
 
@@ -472,7 +513,7 @@ class SecureStorageImpl(
 
     override suspend fun saveBlob(fileName: String, payload: ByteArray) = withContext(config.ioDispatcher) {
         withKeysets { keysets ->
-            val storageFileName = if (config.encryptFileNames) keysets.encryptFileName(fileName) else fileName
+            val storageFileName = keysets.storedFileName(fileName)
             val associatedData = if (config.useAssociatedData) fileName.toByteArray(Charsets.UTF_8) else null
 
             synchronized(getFileLock(storageFileName)) {
@@ -494,7 +535,7 @@ class SecureStorageImpl(
 
     override suspend fun readBlob(fileName: String): ByteArray? = withContext(config.ioDispatcher) {
         withKeysets { keysets ->
-            val storageFileName = if (config.encryptFileNames) keysets.encryptFileName(fileName) else fileName
+            val storageFileName = keysets.storedFileName(fileName)
             val associatedData = if (config.useAssociatedData) fileName.toByteArray(Charsets.UTF_8) else null
 
             synchronized(getFileLock(storageFileName)) {
@@ -519,7 +560,7 @@ class SecureStorageImpl(
 
     override suspend fun deleteBlob(fileName: String): Boolean = withContext(config.ioDispatcher) {
         withKeysets { keysets ->
-            val storageFileName = if (config.encryptFileNames) keysets.encryptFileName(fileName) else fileName
+            val storageFileName = keysets.storedFileName(fileName)
 
             synchronized(getFileLock(storageFileName)) {
                 val result = getFile(storageFileName).delete()
@@ -533,8 +574,7 @@ class SecureStorageImpl(
 
     override suspend fun blobExists(fileName: String): Boolean = withContext(config.ioDispatcher) {
         withKeysets { keysets ->
-            val storageFileName = if (config.encryptFileNames) keysets.encryptFileName(fileName) else fileName
-            getFile(storageFileName).exists()
+            getFile(keysets.storedFileName(fileName)).exists()
         }
     }
 
@@ -578,10 +618,11 @@ class SecureStorageImpl(
     override suspend fun getAllKeys(): Set<String> = withContext(config.ioDispatcher) {
         withKeysets { keysets ->
             val allKeys = keysets.preferences.all.keys
-            if (config.encryptKeys && keysets.metadataAead != null) {
+            val names = keysets.names
+            if (config.encryptKeys && names != null) {
                 allKeys.mapNotNull { encryptedKey ->
                     try {
-                        keysets.decryptKey(encryptedKey)
+                        names.decryptKey(encryptedKey)
                     } catch (e: Exception) {
                         null // Skip keys that can't be decrypted
                     }
@@ -596,10 +637,11 @@ class SecureStorageImpl(
         withKeysets { keysets ->
             val files = storageDirectory.listFiles() ?: return@withKeysets emptySet()
 
-            if (config.encryptFileNames && keysets.metadataAead != null) {
+            val names = keysets.names
+            if (config.encryptFileNames && names != null) {
                 files.mapNotNull { file ->
                     try {
-                        keysets.decryptFileName(file.name)
+                        names.decryptFileName(file.name)
                     } catch (e: Exception) {
                         null // Skip files that can't be decrypted
                     }
@@ -662,30 +704,8 @@ class SecureStorageImpl(
         }
     }
 
-    private fun Keysets.encryptKey(key: String): String {
-        val metadata = metadataAead ?: return key
-        val encrypted = metadata.encrypt(key.toByteArray(Charsets.UTF_8), null)
-        return android.util.Base64.encodeToString(encrypted, android.util.Base64.NO_WRAP or android.util.Base64.URL_SAFE)
-    }
-
-    private fun Keysets.decryptKey(encryptedKey: String): String {
-        val metadata = metadataAead ?: return encryptedKey
-        val decoded = android.util.Base64.decode(encryptedKey, android.util.Base64.NO_WRAP or android.util.Base64.URL_SAFE)
-        return String(metadata.decrypt(decoded, null), Charsets.UTF_8)
-    }
-
-    private fun Keysets.encryptFileName(fileName: String): String {
-        val metadata = metadataAead ?: return fileName
-        val encrypted = metadata.encrypt(fileName.toByteArray(Charsets.UTF_8), null)
-        // Use URL-safe base64 without padding for valid filenames
-        return android.util.Base64.encodeToString(encrypted, android.util.Base64.NO_WRAP or android.util.Base64.URL_SAFE)
-    }
-
-    private fun Keysets.decryptFileName(encryptedFileName: String): String {
-        val metadata = metadataAead ?: return encryptedFileName
-        val decoded = android.util.Base64.decode(encryptedFileName, android.util.Base64.NO_WRAP or android.util.Base64.URL_SAFE)
-        return String(metadata.decrypt(decoded, null), Charsets.UTF_8)
-    }
+    private fun Keysets.storedFileName(fileName: String): String =
+        names?.takeIf { config.encryptFileNames }?.encryptFileName(fileName) ?: fileName
 
     private fun <T> handleDecryptionFailure(keysets: Keysets, key: String, e: Exception): T? {
         return when (config.decryptionFailurePolicy) {
@@ -723,6 +743,7 @@ class SecureStorageImpl(
 
     private companion object {
         const val ANDROID_KEYSTORE = "AndroidKeyStore"
+        const val LEGACY_NAME_BASE64_FLAGS = android.util.Base64.NO_WRAP or android.util.Base64.URL_SAFE
 
         val sharedStates = ConcurrentHashMap<String, SharedState>()
     }
@@ -733,7 +754,7 @@ class SecureStorageImpl(
     private class TinkEncryptedSharedPreferences(
         private val delegate: SharedPreferences,
         private val aead: Aead,
-        private val metadataAead: Aead?,
+        private val names: NameCipher?,
         private val useAssociatedData: Boolean,
         private val secureMemory: Boolean,
     ) : SharedPreferences by delegate {
@@ -770,16 +791,12 @@ class SecureStorageImpl(
         override fun edit(): SharedPreferences.Editor = TinkEditor(
             delegate = delegate.edit(),
             aead = aead,
-            metadataAead = metadataAead,
+            names = names,
             useAssociatedData = useAssociatedData,
             secureMemory = secureMemory,
         )
 
-        private fun encryptKeyIfNeeded(key: String): String {
-            val metadata = metadataAead ?: return key
-            val encrypted = metadata.encrypt(key.toByteArray(Charsets.UTF_8), null)
-            return android.util.Base64.encodeToString(encrypted, android.util.Base64.NO_WRAP or android.util.Base64.URL_SAFE)
-        }
+        private fun encryptKeyIfNeeded(key: String): String = names?.encryptKey(key) ?: key
     }
 
     /**
@@ -788,7 +805,7 @@ class SecureStorageImpl(
     private class TinkEditor(
         private val delegate: SharedPreferences.Editor,
         private val aead: Aead,
-        private val metadataAead: Aead?,
+        private val names: NameCipher?,
         private val useAssociatedData: Boolean,
         private val secureMemory: Boolean,
     ) : SharedPreferences.Editor by delegate {
@@ -818,10 +835,6 @@ class SecureStorageImpl(
             return this
         }
 
-        private fun encryptKeyIfNeeded(key: String): String {
-            val metadata = metadataAead ?: return key
-            val encrypted = metadata.encrypt(key.toByteArray(Charsets.UTF_8), null)
-            return android.util.Base64.encodeToString(encrypted, android.util.Base64.NO_WRAP or android.util.Base64.URL_SAFE)
-        }
+        private fun encryptKeyIfNeeded(key: String): String = names?.encryptKey(key) ?: key
     }
 }
