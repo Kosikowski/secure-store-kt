@@ -16,6 +16,7 @@ import org.junit.Assert.fail
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
+import java.security.InvalidKeyException
 import java.security.KeyStore
 import java.util.Collections
 import java.util.concurrent.atomic.AtomicInteger
@@ -157,7 +158,8 @@ class KeysetLossInstrumentedTest {
             val storage = SecureStorageImpl(context, config(KeysetLossPolicy.RESET))
 
             withUnreadableBlobDirectory {
-                assertThrows(SecureStoreException.InitializationException::class.java) { runBlocking { storage.getString(KEY) } }
+                val thrown = assertThrows(SecureStoreException.InitializationException::class.java) { runBlocking { storage.getString(KEY) } }
+                assertTrue("the lost keyset is attached", thrown.suppressed.single() is InvalidKeyException)
                 assertTrue(resets.isEmpty())
             }
 

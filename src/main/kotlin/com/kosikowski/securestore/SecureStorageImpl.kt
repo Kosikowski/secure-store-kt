@@ -227,22 +227,29 @@ class SecureStorageImpl(
 
     private fun openKeysetsRecoveringLoss(): Keysets {
         copyLegacyKeysets()
-        try {
-            return openKeysetsOrThrow()
-        } catch (e: SecureStoreException.InitializationException) {
-            val failure = e.cause ?: e
-            if (!failure.isLostKeyset(::masterKeyExists)) throw e
-            if (config.keysetLossPolicy == KeysetLossPolicy.THROW) {
-                throw SecureStoreException.KeysetLostException("Keysets can no longer be opened; stored data is unrecoverable", failure)
-            }
+        val lostKeysetFailure =
             try {
-                deleteKeysetsAndData()
-            } catch (deletion: Exception) {
-                throw SecureStoreException.InitializationException("Failed to discard keysets that can no longer be opened", deletion)
+                return openKeysetsOrThrow()
+            } catch (e: SecureStoreException.InitializationException) {
+                val failure = e.cause ?: e
+                if (!failure.isLostKeyset(::masterKeyExists)) throw e
+                if (config.keysetLossPolicy == KeysetLossPolicy.THROW) {
+                    throw SecureStoreException.KeysetLostException("Keysets can no longer be opened; stored data is unrecoverable", failure)
+                }
+                failure
             }
-            pendingResetCause.set(failure)
+        try {
+            deleteKeysetsAndData()
+        } catch (deletion: Exception) {
+            throw SecureStoreException.InitializationException("Failed to discard keysets that can no longer be opened", deletion)
+                .apply { addSuppressed(lostKeysetFailure) }
         }
-        return openKeysetsOrThrow()
+        pendingResetCause.set(lostKeysetFailure)
+        return try {
+            openKeysetsOrThrow()
+        } catch (reopenFailure: SecureStoreException.InitializationException) {
+            throw reopenFailure.apply { addSuppressed(lostKeysetFailure) }
+        }
     }
 
     private fun openKeysetsOrThrow(): Keysets =
