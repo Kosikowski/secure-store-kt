@@ -275,9 +275,10 @@ class SecureStoreConfig private constructor(
 
         /**
          * Called once, with the cause, after [KeysetLossPolicy.RESET] discarded the stored data. Use it
-         * to report the reset and to restore what the app needs, such as signing in again. It runs on
-         * the thread of the operation that opened the store, and an exception it throws fails that
-         * operation.
+         * to report the reset and to restore what the app needs, such as signing in again. The instance
+         * that discarded the data calls it on the thread of the operation that triggered the reset,
+         * outside the store's locks. If it throws, that operation fails with the exception, whatever the
+         * [DecryptionFailurePolicy], and the listener is called again on the instance's next operation.
          * Default: no-op
          */
         fun onKeysetReset(listener: (cause: Throwable) -> Unit) = apply { this.onKeysetReset = listener }

@@ -174,7 +174,7 @@ class SecureStorageImpl(
     private fun <T> withKeysets(block: (Keysets) -> T): T {
         while (true) {
             val keysets = currentKeysets()
-            pendingResetCause.getAndSet(null)?.let(config.onKeysetReset)
+            notifyPendingReset()
             shared.lock.read {
                 if (keysets.generation == shared.generation) return block(keysets)
             }
@@ -190,6 +190,16 @@ class SecureStorageImpl(
         shared.lock.write {
             openKeysets?.takeIf { it.generation == shared.generation }?.let { return it }
             return openKeysetsRecoveringLoss().also { openKeysets = it }
+        }
+    }
+
+    private fun notifyPendingReset() {
+        val cause = pendingResetCause.getAndSet(null) ?: return
+        try {
+            config.onKeysetReset(cause)
+        } catch (e: Throwable) {
+            pendingResetCause.compareAndSet(null, cause)
+            throw e
         }
     }
 

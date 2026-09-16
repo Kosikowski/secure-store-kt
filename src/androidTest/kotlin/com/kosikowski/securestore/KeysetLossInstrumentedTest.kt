@@ -9,12 +9,14 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.security.KeyStore
 import java.util.Collections
+import java.util.concurrent.atomic.AtomicInteger
 
 @RunWith(AndroidJUnit4::class)
 class KeysetLossInstrumentedTest {
@@ -51,6 +53,33 @@ class KeysetLossInstrumentedTest {
             assertEquals(NEW_VALUE, reopened.getString(KEY))
             assertArrayEquals(NEW_BLOB_CONTENT, reopened.readBlob(BLOB))
             assertEquals(1, resets.size)
+        }
+
+    @Test
+    fun throwingResetListener_failsTheOperationAndIsCalledAgainOnTheNextOne() =
+        runBlocking {
+            storeValueAndBlob(KeysetLossPolicy.RESET)
+            keyStore().deleteEntry(masterKeyAlias)
+            val calls = AtomicInteger()
+            val listenerFailure = IllegalStateException("listener failed")
+            val storage =
+                SecureStorageImpl(
+                    context,
+                    config(KeysetLossPolicy.RESET, decryptionFailurePolicy = DecryptionFailurePolicy.RETURN_NULL)
+                        .toBuilder()
+                        .onKeysetReset { if (calls.incrementAndGet() == 1) throw listenerFailure }
+                        .build(),
+                )
+
+            try {
+                storage.getString(KEY)
+                fail("Expected the listener's exception")
+            } catch (e: IllegalStateException) {
+                assertSame(listenerFailure, e)
+            }
+            assertNull(storage.getString(KEY))
+            assertNull(storage.getString(KEY))
+            assertEquals(2, calls.get())
         }
 
     @Test
