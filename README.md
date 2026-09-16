@@ -18,13 +18,15 @@ A production-ready Android library for secure storage using Google Tink encrypti
 - 🔄 **Defense in Depth**: Separate encryption keys for different data types
 - ⚙️ **Highly Configurable**: Customize encryption, key protection, storage mode, and more
 - 🔑 **Metadata Encryption**: Optional encryption of keys and filenames
+- ♻️ **Lost-Key Recovery**: Recovers when Android deletes the Keystore key, e.g. after the app's data is cleared
+- 🔁 **Key Rotation**: Add a new encryption key while existing data stays readable
 
 ## Security Guarantees
 
 - **Confidentiality**: All data is encrypted with authenticated encryption (AEAD)
 - **Integrity**: Authenticated encryption prevents tampering
-- **Key Protection**: Encryption keys never leave secure hardware (when available)
-- **Device Protection**: Works before user unlocks device (API 24+)
+- **Key Protection**: The master key lives in Android Keystore and never leaves secure hardware when the device has it; the data keys are stored encrypted by it
+- **Device Protection**: `DEVICE_PROTECTED` stores (the default) work before the user unlocks the device, in direct-boot-aware apps
 - **Associated Data**: Prevents ciphertext relocation attacks
 
 ## Installation
@@ -33,7 +35,7 @@ Add the dependency to your app's `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("io.github.kosikowski:securestore:1.0.0")
+    implementation("io.github.kosikowski:securestore:1.1.0")
 }
 ```
 
@@ -100,6 +102,8 @@ val performanceStorage = SecureStorageImpl(context, SecureStoreConfig.PERFORMANC
 | `useAssociatedData` | Use key/filename as associated data | true |
 | `decryptionFailurePolicy` | What to do on decryption failure | RETURN_NULL |
 | `namespace` | Isolate multiple storage instances | "default" |
+| `masterKeyAlias` | Android Keystore alias of the master key (the namespace is appended) | "secure_store_master_key" |
+| `ioDispatcher` | Coroutine dispatcher for storage operations | `Dispatchers.IO` |
 | `secureMemory` | Wipe sensitive data from memory after use | false |
 | `keysetLossPolicy` | What to do when the keysets can no longer be opened (RESET, THROW) | RESET |
 | `onKeysetReset` | Called after RESET discarded the stored data | no-op |
@@ -215,7 +219,7 @@ store to a newly configured algorithm. Name encryption keeps its key.
 ### `SecureStoreConfig.DEFAULT`
 Standard configuration for most use cases:
 - AES-256-GCM encryption
-- Software key protection
+- No hardware requirement (Android Keystore still uses secure hardware when the device has it)
 - Device-protected storage
 - Associated data enabled
 
@@ -223,7 +227,7 @@ Standard configuration for most use cases:
 Maximum security for sensitive applications:
 - Its own namespace, `high_security`
 - AES-256-GCM encryption
-- Hardware-required key protection
+- Requires the master key to be in secure hardware (operations throw `HardwareRequiredException` otherwise, e.g. on emulators)
 - Encrypted keys and filenames
 - Secure memory wiping
 - Auto-delete corrupted entries
@@ -231,7 +235,7 @@ Maximum security for sensitive applications:
 ### `SecureStoreConfig.PERFORMANCE`
 Optimized for performance:
 - ChaCha20-Poly1305 (faster on devices without AES-NI)
-- Software key protection
+- No hardware requirement
 - No metadata encryption
 - No associated data
 
@@ -356,9 +360,9 @@ val secureStorage = SecureStorageImpl(context, config)
 
 ### Architecture
 
-1. **Master Key**: Protected by Android Keystore (hardware-backed when available)
-2. **Encryption Keys**: Generated using Tink, encrypted by master key
-3. **Data Encryption**: All data encrypted with configurable AEAD algorithm
+1. **Master Key**: An AES key in Android Keystore, in secure hardware when the device has it
+2. **Keysets**: Tink keysets for values, blobs and (optionally) names, encrypted by the master key
+3. **Data Encryption**: Values and blobs are encrypted with the configured AEAD algorithm; names deterministically with AES-SIV
 4. **Storage**:
    - Key-Value pairs → Encrypted SharedPreferences
    - Blobs → Encrypted files in app's private directory
@@ -368,21 +372,16 @@ val secureStorage = SecureStorageImpl(context, config)
 
 ```
 ┌─────────────────────────────────────┐
-│        Android Keystore             │
+│  Master key in Android Keystore     │
 │   (secure hardware when available)  │
-└────────────────┬────────────────────┘
-                 │ Protects
-                 ▼
-┌─────────────────────────────────────┐
-│         Tink Master Key             │
 └────────────────┬────────────────────┘
                  │ Encrypts
                  ▼
 ┌─────────────────────────────────────┐
-│    Data Encryption Keys (DEK)       │
-│  - Preferences DEK                  │
-│  - File DEK                         │
-│  - Metadata DEK (optional)          │
+│          Tink keysets               │
+│  - Values keyset                    │
+│  - Blobs keyset                     │
+│  - Names keyset (optional, AES-SIV) │
 └────────────────┬────────────────────┘
                  │ Encrypts
                  ▼
@@ -396,7 +395,7 @@ val secureStorage = SecureStorageImpl(context, config)
 ### Thread Safety
 
 All operations are thread-safe:
-- **File operations**: Protected by per-file locks
+- **File operations**: Protected by locks shared by all instances of the store; `saveBlob` writes to a separate file and renames it, so a crash never leaves a truncated blob
 - **Preferences**: Thread-safe by design
 - **clearAll()**: Uses a lock shared by the instances of the store
 - **reset()**: Waits for running operations on the store to finish, and later operations wait for the reset
@@ -456,6 +455,7 @@ interface SecureStorage {
 6. **Testing**: Use instrumented tests on real devices/emulators
 7. **High Security**: Use `SecureStoreConfig.HIGH_SECURITY` for sensitive apps
 8. **Namespaces**: Use separate namespaces for different data categories
+9. **Lost Keys**: Use `onKeysetReset` to learn when stored data was discarded, e.g. to ask the user to sign in again
 
 ## Comparison with Alternatives
 
@@ -507,9 +507,14 @@ No special configuration needed. The library is R8-friendly.
 ### Running Tests
 
 ```bash
+# Run unit tests
+./gradlew test
+
 # Run instrumented tests (requires device/emulator)
 ./gradlew connectedAndroidTest
 ```
+
+See [TESTING.md](docs/TESTING.md) for details.
 
 ### Writing Tests
 
@@ -543,7 +548,7 @@ Contributions are welcome! Please see [CONTRIBUTING.md](docs/CONTRIBUTING.md) fo
 
 ## Security
 
-If you discover a security vulnerability, please email security@example.com instead of using the issue tracker.
+If you discover a security vulnerability, please don't open a public issue: contact me privately via GitHub ([@Kosikowski](https://github.com/Kosikowski)) instead. See [SECURITY.md](docs/SECURITY.md).
 
 ## License
 

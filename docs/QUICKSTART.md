@@ -6,7 +6,7 @@ Add the dependency to your app's `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("io.github.kosikowski:securestore:1.0.0")
+    implementation("io.github.kosikowski:securestore:1.1.0")
 }
 ```
 
@@ -70,8 +70,10 @@ val performanceStorage = SecureStorageImpl(context, SecureStoreConfig.PERFORMANC
 ### Publishing Tasks
 ```bash
 ./gradlew publishToMavenLocal              # Publish to local Maven
-./gradlew publishReleasePublicationToSonatypeRepository  # Publish to Maven Central
+./gradlew publishAndReleaseToMavenCentral  # Publish to Maven Central (signing required)
 ```
+
+Releases are published by publishing a GitHub Release; see [PUBLISHING.md](PUBLISHING.md).
 
 ## Documentation
 
@@ -79,6 +81,7 @@ val performanceStorage = SecureStorageImpl(context, SecureStoreConfig.PERFORMANC
 - **docs/CHANGELOG.md** - Version history
 - **docs/EXAMPLES.md** - Code examples
 - **docs/SECURITY.md** - Security policy
+- **docs/TESTING.md** - Running and writing tests
 - **docs/CONTRIBUTING.md** - How to contribute
 - **docs/PUBLISHING.md** - How to publish to Maven Central
 
@@ -96,7 +99,7 @@ repositories {
 }
 
 dependencies {
-    implementation("io.github.kosikowski:securestore:1.0.0")
+    implementation("io.github.kosikowski:securestore:1.1.0")
 }
 ```
 
@@ -111,6 +114,8 @@ dependencies {
 | `encryptFileNames` | true/false | false | Encrypt blob filenames |
 | `useAssociatedData` | true/false | true | Use associated data for AEAD |
 | `namespace` | String | "default" | Namespace for isolation |
+| `masterKeyAlias` | String | "secure_store_master_key" | Android Keystore alias of the master key (the namespace is appended) |
+| `ioDispatcher` | CoroutineDispatcher | Dispatchers.IO | Dispatcher for storage operations |
 | `secureMemory` | true/false | false | Wipe sensitive data from memory |
 | `decryptionFailurePolicy` | RETURN_NULL, THROW_EXCEPTION, DELETE_AND_RETURN_NULL | RETURN_NULL | Decryption failure behavior |
 | `keysetLossPolicy` | RESET, THROW | RESET | Behavior when the keysets can no longer be opened |
@@ -161,7 +166,9 @@ try {
 } catch (e: SecureStoreException.StorageException) {
     // Handle storage failure
 } catch (e: SecureStoreException.HardwareRequiredException) {
-    // Hardware-backed keys not available
+    // HARDWARE_REQUIRED is set but the master key is not in secure hardware
+} catch (e: SecureStoreException.KeysetLostException) {
+    // Only with KeysetLossPolicy.THROW: the keys are gone, call storage.reset()
 }
 ```
 

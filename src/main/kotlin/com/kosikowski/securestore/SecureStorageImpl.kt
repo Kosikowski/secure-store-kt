@@ -43,10 +43,10 @@ import kotlin.concurrent.write
  * - All file operations are synchronized to prevent concurrent access corruption
  *
  * ## Security Features
- * - Keys kept in secure hardware (TEE or StrongBox) when the device has it
+ * - Master key kept in secure hardware by Android Keystore when the device has it
  * - AES-256-GCM encryption (configurable)
  * - Authenticated encryption prevents tampering
- * - Keys never leave the secure hardware
+ * - Data keysets are stored encrypted by the master key
  * - Optional key and filename encryption
  * - Associated data prevents ciphertext relocation attacks
  *

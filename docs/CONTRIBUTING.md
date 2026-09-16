@@ -59,8 +59,8 @@ Enhancement suggestions are tracked as GitHub issues. When creating an enhanceme
 ### Security Vulnerabilities
 
 **DO NOT** open a public issue for security vulnerabilities. Instead:
-- Email details to: security@example.com
-- Include "SecureStore Security" in the subject
+- Contact me privately via GitHub ([@Kosikowski](https://github.com/Kosikowski))
+- Mention "SecureStore Security" when you get in touch
 - Provide detailed description and reproduction steps
 - Allow time for a fix before public disclosure
 
@@ -77,12 +77,12 @@ Enhancement suggestions are tracked as GitHub issues. When creating an enhanceme
 
 1. **Fork and clone the repository:**
    ```bash
-   git clone https://github.com/YOUR_USERNAME/SecureStore.git
-   cd SecureStore
+   git clone https://github.com/YOUR_USERNAME/secure-store-kt.git
+   cd secure-store-kt
    ```
 
 2. **Open in Android Studio:**
-   - File → Open → Select the SecureStore directory
+   - File → Open → Select the secure-store-kt directory
 
 3. **Sync Gradle:**
    - Let Android Studio sync the project
@@ -96,16 +96,21 @@ Enhancement suggestions are tracked as GitHub issues. When creating an enhanceme
 ### Project Structure
 
 ```
-SecureStore/
+secure-store-kt/
 ├── src/
 │   ├── main/kotlin/com/kosikowski/securestore/
 │   │   ├── SecureStorage.kt          # Interface
-│   │   └── SecureStorageImpl.kt      # Implementation
-│   └── androidTest/kotlin/com/kosikowski/securestore/
-│       └── SecureStorageInstrumentedTest.kt
+│   │   ├── SecureStorageImpl.kt      # Implementation
+│   │   ├── SecureStoreConfig.kt      # Configuration, presets and policies
+│   │   ├── SecureStoreException.kt   # Exception hierarchy
+│   │   ├── KeysetLoss.kt             # Lost-keyset detection
+│   │   ├── KeysetStorageContext.kt   # Keeps keysets next to device-protected data
+│   │   └── NameCipher.kt             # Deterministic key and file name encryption
+│   ├── test/kotlin/com/kosikowski/securestore/          # Unit tests
+│   └── androidTest/kotlin/com/kosikowski/securestore/   # Instrumented tests
 ├── build.gradle.kts                   # Build configuration
 ├── README.md                          # Documentation
-└── CONTRIBUTING.md                    # This file
+└── docs/                              # Guides, including this file
 ```
 
 ## Coding Standards
@@ -122,8 +127,7 @@ Follow the [Kotlin Coding Conventions](https://kotlinlang.org/docs/coding-conven
 ### Code Quality
 
 - **No warnings**: Code must compile without warnings
-- **Ktlint**: Run `./gradlew ktlintFormat` before committing
-- **Detekt**: Run `./gradlew detekt` to check code quality
+- **Ktlint**: Run `./gradlew ktlintFormat` before committing; `./gradlew installGitHooks` adds a pre-push `ktlintCheck`
 - **Documentation**: All public APIs must have KDoc comments
 - **Tests**: All new features must have tests
 
@@ -174,13 +178,16 @@ fun descriptiveTestName_condition_expectedBehavior() = runBlocking {
 # Run all tests
 ./gradlew test connectedAndroidTest
 
-# Run specific test class
+# Run specific instrumented test class
 ./gradlew connectedAndroidTest \
-  --tests "com.kosikowski.securestore.SecureStorageInstrumentedTest"
+  -Pandroid.testInstrumentationRunnerArguments.class=com.kosikowski.securestore.SecureStorageInstrumentedTest
 
-# Run specific test method
+# Run specific instrumented test method
 ./gradlew connectedAndroidTest \
-  --tests "*.SecureStorageInstrumentedTest.putAndGetString_roundTrip"
+  -Pandroid.testInstrumentationRunnerArguments.class=com.kosikowski.securestore.SecureStorageInstrumentedTest#putAndGetString_roundTrip
+
+# Run specific unit test class
+./gradlew testDebugUnitTest --tests "com.kosikowski.securestore.KeysetLossTest"
 ```
 
 ## Pull Request Process
@@ -268,22 +275,17 @@ Follow [Semantic Versioning](https://semver.org/):
 
 ### Release Checklist
 
-1. Update version in `build.gradle.kts`
-2. Update `CHANGELOG.md`
-3. Update README if needed
-4. Create git tag: `git tag -a v1.0.0 -m "Release 1.0.0"`
-5. Push tag: `git push origin v1.0.0`
-6. Publish to Maven Central:
-   ```bash
-   ./gradlew publishReleasePublicationToSonatypeRepository
-   ```
-7. Create GitHub Release with changelog
+1. Update `version` in `build.gradle.kts` (the published version comes from here, not from the tag)
+2. Move the `## [Unreleased]` entries in `docs/CHANGELOG.md` under the new version and update the compare links
+3. Update the dependency snippets in `README.md` and `docs/*.md`
+4. Merge to `main`
+5. Publish a GitHub Release tagged `vX.Y.Z` with the changelog entries; the `Publish to Maven Central` workflow
+   builds, signs and releases it (see [PUBLISHING.md](PUBLISHING.md))
 
 ## Questions?
 
-- 📧 **Email**: mateusz.kosikowski@gmail.com
-- 💬 **Discussions**: Use GitHub Discussions
-- 🐛 **Issues**: Use GitHub Issues
+- 💬 **Contact**: Reach me via GitHub ([@Kosikowski](https://github.com/Kosikowski))
+- 🐛 **Issues**: Use [GitHub Issues](https://github.com/Kosikowski/secure-store-kt/issues)
 
 
 Thank you for contributing! 🎉

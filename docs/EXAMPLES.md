@@ -117,14 +117,15 @@ val storage = SecureStorageImpl(context, config)
 ```kotlin
 import com.kosikowski.securestore.*
 
-// High security preset - hardware-backed keys, encrypted metadata
+// High security preset - master key required in secure hardware, encrypted names, own "high_security" namespace
 val highSecurityStorage = SecureStorageImpl(context, SecureStoreConfig.HIGH_SECURITY)
-
-// Performance preset - ChaCha20-Poly1305, optimized for speed
-val performanceStorage = SecureStorageImpl(context, SecureStoreConfig.PERFORMANCE)
 
 // Default preset
 val defaultStorage = SecureStorageImpl(context, SecureStoreConfig.DEFAULT)
+
+// Performance preset - ChaCha20-Poly1305, optimized for speed. It uses the "default" namespace like
+// DEFAULT but stores values differently, so give it its own namespace when both are used.
+val performanceStorage = SecureStorageImpl(context, SecureStoreConfig.PERFORMANCE.toBuilder().namespace("performance").build())
 ```
 
 ### Namespace Isolation
@@ -254,6 +255,53 @@ class SecureDataManager(context: Context) {
         }
     }
 }
+```
+
+## Handling Lost Keys
+
+Android deletes an app's Keystore keys when its data is cleared (and, for apps sharing an
+`android:sharedUserId`, when any of them has its data cleared). The stored data can't be decrypted
+afterwards.
+
+```kotlin
+import com.kosikowski.securestore.*
+
+// Default: discard the unreadable data, carry on empty, and get told once
+val storage = SecureStorageImpl(
+    context,
+    SecureStoreConfig.Builder()
+        .namespace("auth")
+        .onKeysetReset { cause ->
+            crashReporter.recordNonFatal(cause)
+            sessionManager.requireSignIn()
+        }
+        .build()
+)
+
+// Alternatively, decide yourself: every operation throws until reset() is called
+val strictStorage = SecureStorageImpl(
+    context,
+    SecureStoreConfig.Builder()
+        .namespace("documents")
+        .keysetLossPolicy(KeysetLossPolicy.THROW)
+        .build()
+)
+
+suspend fun readDocument(name: String): ByteArray? =
+    try {
+        strictStorage.readBlob(name)
+    } catch (e: SecureStoreException.KeysetLostException) {
+        strictStorage.reset()
+        null
+    }
+```
+
+## Key Rotation
+
+```kotlin
+// Adds a new primary key for values and blobs. Existing data stays readable with the earlier keys and
+// is encrypted with the new key the next time it is written.
+storage.rotateKeys()
 ```
 
 ## Dependency Injection Examples
@@ -392,7 +440,8 @@ class SecureStorageTest {
     
     @After
     fun teardown() {
-        runBlocking { storage.clearAll() }
+        // reset() also deletes the keysets, which clearAll() keeps
+        runBlocking { storage.reset() }
     }
     
     @Test
@@ -708,9 +757,9 @@ class MultiAccountManager(private val context: Context) {
     }
     
     suspend fun removeAccount(accountId: String) {
-        // Clear account-specific storage
+        // Delete the account's data together with its keysets
         val accountStorage = getAccountStorage(accountId)
-        accountStorage.clearAll()
+        accountStorage.reset()
         
         // Remove from account list
         val accountIds = getAccountIds().toMutableSet()
