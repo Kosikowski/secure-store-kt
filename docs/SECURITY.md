@@ -110,9 +110,7 @@ Optimized for speed:
 
 **Please do NOT report security vulnerabilities through public GitHub issues.**
 
-Instead, please report them via email to:
-- **Email**: security@example.com
-- **Subject**: "SecureStore Security Vulnerability"
+Instead, please contact me privately via GitHub ([@Kosikowski](https://github.com/Kosikowski)) and mention "SecureStore Security Vulnerability".
 
 ### What to Include
 
@@ -292,7 +290,6 @@ When the keys are lost, or a keyset is corrupted, the data cannot be recovered. 
 
 Subscribe to security updates:
 - GitHub: Watch releases for this repository
-- Email: security-announce@example.com (coming soon)
 
 ## Compliance
 
@@ -340,8 +337,8 @@ try {
 ## Questions?
 
 For security questions (non-vulnerabilities):
-- **Email**: security@example.com
-- **Discussions**: GitHub Discussions
+- **Contact**: Reach me via GitHub ([@Kosikowski](https://github.com/Kosikowski))
+- **Issues**: [GitHub Issues](https://github.com/Kosikowski/secure-store-kt/issues)
 
 ---
 

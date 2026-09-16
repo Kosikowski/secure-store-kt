@@ -548,7 +548,7 @@ Contributions are welcome! Please see [CONTRIBUTING.md](docs/CONTRIBUTING.md) fo
 
 ## Security
 
-If you discover a security vulnerability, please email security@example.com instead of using the issue tracker.
+If you discover a security vulnerability, please don't open a public issue: contact me privately via GitHub ([@Kosikowski](https://github.com/Kosikowski)) instead. See [SECURITY.md](docs/SECURITY.md).
 
 ## License
 

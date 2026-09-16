@@ -59,8 +59,8 @@ Enhancement suggestions are tracked as GitHub issues. When creating an enhanceme
 ### Security Vulnerabilities
 
 **DO NOT** open a public issue for security vulnerabilities. Instead:
-- Email details to: security@example.com
-- Include "SecureStore Security" in the subject
+- Contact me privately via GitHub ([@Kosikowski](https://github.com/Kosikowski))
+- Mention "SecureStore Security" when you get in touch
 - Provide detailed description and reproduction steps
 - Allow time for a fix before public disclosure
 
@@ -284,9 +284,8 @@ Follow [Semantic Versioning](https://semver.org/):
 
 ## Questions?
 
-- 📧 **Email**: mateusz.kosikowski@gmail.com
-- 💬 **Discussions**: Use GitHub Discussions
-- 🐛 **Issues**: Use GitHub Issues
+- 💬 **Contact**: Reach me via GitHub ([@Kosikowski](https://github.com/Kosikowski))
+- 🐛 **Issues**: Use [GitHub Issues](https://github.com/Kosikowski/secure-store-kt/issues)
 
 
 Thank you for contributing! 🎉
